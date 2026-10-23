@@ -12,12 +12,39 @@ export type IndicatorKey =
   | "macd"
   | "volume";
 
-export type DrawingTool = "cursor" | "hline" | "measure" | "eraser";
+export type DrawingTool =
+  | "cursor"
+  | "hline"
+  | "measure"
+  | "fibRetracement"
+  | "fibExtension"
+  | "eraser";
 
 export interface PriceLine {
   id: string;
   symbol: string;
   price: number;
+}
+
+export type FibKind = "retracement" | "extension";
+
+export interface FibPoint {
+  time: number;
+  price: number;
+}
+
+export interface FibDrawing {
+  id: string;
+  symbol: string;
+  kind: FibKind;
+  /** retracement: [A, B] · extension: [A, B, C] */
+  points: FibPoint[];
+}
+
+function newId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random()}`;
 }
 
 export interface IndicatorConfig {
@@ -72,6 +99,8 @@ interface ChartState {
   /** Periods and parameters for each indicator */
   config: IndicatorConfig;
   watchlist: string[];
+  /** Fibonacci drawings (persisted, filtered by symbol when rendering) */
+  fibs: FibDrawing[];
 
   // Ephemeral UI state (not persisted)
   tool: DrawingTool;
@@ -92,6 +121,8 @@ interface ChartState {
   setTool: (t: DrawingTool) => void;
   addPriceLine: (price: number, symbol: string) => void;
   clearPriceLines: (symbol?: string) => void;
+  addFib: (kind: FibKind, points: FibPoint[], symbol: string) => void;
+  clearFibs: (symbol?: string) => void;
   setSymbolDialogOpen: (v: boolean) => void;
   setSettingsTarget: (k: IndicatorKey | null) => void;
 }
@@ -119,6 +150,7 @@ export const useChartStore = create<ChartState>()(
       },
       config: { ...DEFAULT_CONFIG },
       watchlist: DEFAULT_WATCHLIST,
+      fibs: [],
       tool: "cursor",
       priceLines: [],
       symbolDialogOpen: false,
@@ -158,14 +190,7 @@ export const useChartStore = create<ChartState>()(
         set((state) => ({
           priceLines: [
             ...state.priceLines,
-            {
-              id:
-                typeof crypto !== "undefined" && "randomUUID" in crypto
-                  ? crypto.randomUUID()
-                  : `${Date.now()}-${Math.random()}`,
-              symbol,
-              price,
-            },
+            { id: newId(), symbol, price },
           ],
         })),
       clearPriceLines: (symbol) =>
@@ -173,6 +198,14 @@ export const useChartStore = create<ChartState>()(
           priceLines: symbol
             ? state.priceLines.filter((p) => p.symbol !== symbol)
             : [],
+        })),
+      addFib: (kind, points, symbol) =>
+        set((state) => ({
+          fibs: [...state.fibs, { id: newId(), symbol, kind, points }],
+        })),
+      clearFibs: (symbol) =>
+        set((state) => ({
+          fibs: symbol ? state.fibs.filter((f) => f.symbol !== symbol) : [],
         })),
       setSymbolDialogOpen: (symbolDialogOpen) => set({ symbolDialogOpen }),
       setSettingsTarget: (settingsTarget) => set({ settingsTarget }),
@@ -186,6 +219,7 @@ export const useChartStore = create<ChartState>()(
         hidden: s.hidden,
         config: s.config,
         watchlist: s.watchlist,
+        fibs: s.fibs,
       }),
     },
   ),

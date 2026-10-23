@@ -10,6 +10,7 @@ import {
   type IChartApi,
   type ISeriesApi,
   type IPriceLine,
+  type Logical,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { fetchKlines } from "@/lib/binance/rest";
@@ -19,11 +20,27 @@ import type { Candle, Timeframe } from "@/lib/binance/types";
 import {
   INDICATOR_COLORS,
   useChartStore,
+  type DrawingTool,
+  type FibKind,
+  type FibPoint,
   type IndicatorKey,
 } from "@/lib/store/chart-store";
 import { formatPrice, formatVolume } from "@/lib/format";
+import { FIB_POINT_COUNT, fibLevels } from "@/lib/fibonacci";
 import { IndicatorPill } from "./IndicatorPill";
 import { MeasureOverlay } from "./MeasureOverlay";
+import { FibOverlay } from "./FibOverlay";
+
+const FIB_TOOLS: Partial<Record<DrawingTool, FibKind>> = {
+  fibRetracement: "retracement",
+  fibExtension: "extension",
+};
+
+/** Fib being placed: the last point follows the mouse until clicked */
+interface FibDraft {
+  kind: FibKind;
+  points: FibPoint[];
+}
 
 interface MeasurePoint {
   time: number;
@@ -113,6 +130,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const config = useChartStore((s) => s.config);
   const tool = useChartStore((s) => s.tool);
   const priceLines = useChartStore((s) => s.priceLines);
+  const fibs = useChartStore((s) => s.fibs);
   const addPriceLine = useChartStore((s) => s.addPriceLine);
   const removeIndicator = useChartStore((s) => s.removeIndicator);
   const toggleHidden = useChartStore((s) => s.toggleHidden);
@@ -136,6 +154,74 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const [renderTick, setRenderTick] = useState(0);
   const measureRef = useRef(measure);
   measureRef.current = measure;
+  const [fibDraft, setFibDraft] = useState<FibDraft | null>(null);
+  const fibDraftRef = useRef(fibDraft);
+  fibDraftRef.current = fibDraft;
+
+  /** Seconds per bar, from the last two loaded candles */
+  function barSeconds(data: readonly { time: unknown }[]): number {
+    if (data.length < 2) return 60;
+    return Number(data[data.length - 1].time) - Number(data[data.length - 2].time) || 60;
+  }
+
+  /**
+   * Pixel X → time. Works past the last bar (future space) by extrapolating
+   * with the bar duration, so fib points can be placed to the right.
+   */
+  function coordinateToTime(x: number): number | null {
+    const chart = chartRef.current;
+    const series = candleSeriesRef.current;
+    if (!chart || !series) return null;
+    const data = series.data();
+    if (data.length === 0) return null;
+    const logical = chart.timeScale().coordinateToLogical(x);
+    if (logical === null) return null;
+    const idx = Math.round(logical);
+    if (idx >= 0 && idx < data.length) return Number(data[idx].time);
+    const sec = barSeconds(data);
+    if (idx < 0) return Number(data[0].time) + idx * sec;
+    return Number(data[data.length - 1].time) + (idx - (data.length - 1)) * sec;
+  }
+
+  /**
+   * Time → pixel X. Handles times that are not exact bars (drawing made on
+   * another timeframe) and times outside the loaded data.
+   */
+  function timeToCoordinate(t: number): number | null {
+    const chart = chartRef.current;
+    const series = candleSeriesRef.current;
+    if (!chart || !series) return null;
+    const data = series.data();
+    if (data.length === 0) return null;
+    const sec = barSeconds(data);
+    const first = Number(data[0].time);
+    const lastIdx = data.length - 1;
+    const last = Number(data[lastIdx].time);
+    let logical: number;
+    if (t < first) logical = (t - first) / sec;
+    else if (t > last) logical = lastIdx + (t - last) / sec;
+    else {
+      // Last bar with time <= t
+      let lo = 0;
+      let hi = lastIdx;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (Number(data[mid].time) <= t) lo = mid;
+        else hi = mid - 1;
+      }
+      logical = lo + (t - Number(data[lo].time)) / sec;
+    }
+    return chart.timeScale().logicalToCoordinate(logical as Logical);
+  }
+
+  function pointAt(x: number, y: number): FibPoint | null {
+    const price = candleSeriesRef.current?.coordinateToPrice(y);
+    const time = coordinateToTime(x);
+    if (price === null || price === undefined || !isFinite(price) || time === null) return null;
+    return { time, price };
+  }
+  const pointAtRef = useRef(pointAt);
+  pointAtRef.current = pointAt;
 
   // Helper — compute pane top offsets from chart layout
   function recomputePaneOffsets() {
@@ -222,6 +308,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
     // Click handler — add horizontal price line when hline tool is active
     chart.subscribeClick((param) => {
       if (!param.point || !candleSeriesRef.current) return;
+      // Fib tools use their own DOM listeners (see effect below)
+      if (FIB_TOOLS[toolRef.current]) return;
+
       const price = candleSeriesRef.current.coordinateToPrice(param.point.y);
       if (price === null || !isFinite(price)) return;
 
@@ -531,10 +620,87 @@ export function PriceChart({ symbol, timeframe }: Props) {
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.style.cursor =
-        tool === "hline" || tool === "measure" ? "crosshair" : "";
+        tool === "hline" || tool === "measure" || FIB_TOOLS[tool] ? "crosshair" : "";
     }
     if (tool !== "measure") setMeasure(INITIAL_MEASURE);
+    setFibDraft(null);
   }, [tool]);
+
+  // Fib placement. Uses raw DOM events instead of chart.subscribeClick because
+  // the chart swallows a second click that comes quickly (double-click).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let down: { x: number; y: number } | null = null;
+
+    /** Pointer position inside the main pane, or null if outside it */
+    const localPoint = (e: PointerEvent) => {
+      const chart = chartRef.current;
+      if (!chart) return null;
+      const rect = el.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const paneHeight = chart.panes()[0]?.getHeight() ?? 0;
+      if (x < 0 || y < 0 || x > chart.timeScale().width() || y > paneHeight) return null;
+      return { x, y };
+    };
+
+    const onDown = (e: PointerEvent) => {
+      down = { x: e.clientX, y: e.clientY };
+    };
+
+    const onUp = (e: PointerEvent) => {
+      const kind = FIB_TOOLS[toolRef.current];
+      const start = down;
+      down = null;
+      // Ignore drags (panning the chart) and non-left buttons
+      if (!kind || !start || e.button !== 0) return;
+      if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 5) return;
+      const local = localPoint(e);
+      const p = local && pointAtRef.current(local.x, local.y);
+      if (!p) return;
+      const draft = fibDraftRef.current;
+      if (!draft || draft.kind !== kind) {
+        setFibDraft({ kind, points: [p, p] });
+        return;
+      }
+      const fixed = [...draft.points.slice(0, -1), p];
+      if (fixed.length >= FIB_POINT_COUNT[kind]) {
+        const store = useChartStore.getState();
+        store.addFib(kind, fixed, symbolRef.current);
+        store.setTool("cursor");
+        setFibDraft(null);
+      } else {
+        setFibDraft({ kind, points: [...fixed, p] });
+      }
+    };
+
+    const onMove = (e: PointerEvent) => {
+      if (!fibDraftRef.current) return;
+      const local = localPoint(e);
+      const p = local && pointAtRef.current(local.x, local.y);
+      if (!p) return;
+      setFibDraft((prev) =>
+        prev ? { ...prev, points: [...prev.points.slice(0, -1), p] } : prev,
+      );
+    };
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFibDraft(null);
+    };
+
+    // Capture phase: the chart's own handlers don't get a chance to stop them
+    el.addEventListener("pointerdown", onDown, true);
+    el.addEventListener("pointerup", onUp, true);
+    el.addEventListener("pointermove", onMove, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      el.removeEventListener("pointerdown", onDown, true);
+      el.removeEventListener("pointerup", onUp, true);
+      el.removeEventListener("pointermove", onMove, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, []);
 
   function updateEMAs() {
     const c = candlesRef.current;
@@ -778,12 +944,52 @@ export function PriceChart({ symbol, timeframe }: Props) {
       );
     }
   }
+  // Fibonacci drawings for this symbol + the one being placed
+  const fibRender: React.ReactNode[] = [];
+  if (chartRef.current && candleSeriesRef.current && paneOffsets[0]) {
+    const series = candleSeriesRef.current;
+    const areaWidth = chartRef.current.timeScale().width();
+    const areaHeight = paneOffsets[0].height;
+    const toDraw = fibs
+      .filter((f) => f.symbol === symbol)
+      .map((f) => ({ key: f.id, kind: f.kind, points: f.points, isPreview: false }));
+    if (fibDraft) {
+      toDraw.push({ key: "draft", kind: fibDraft.kind, points: fibDraft.points, isPreview: true });
+    }
+    for (const f of toDraw) {
+      const pts = f.points.flatMap((p) => {
+        const x = timeToCoordinate(p.time);
+        const y = series.priceToCoordinate(p.price);
+        return x === null || y === null ? [] : [{ x, y }];
+      });
+      if (pts.length !== f.points.length) continue;
+      // Extension levels need C: until then only the A→B line is shown
+      const levels =
+        f.kind === "extension" && f.points.length < 3
+          ? []
+          : fibLevels(f.kind, f.points).flatMap((l) => {
+              const y = series.priceToCoordinate(l.price);
+              return y === null ? [] : [{ ...l, y }];
+            });
+      fibRender.push(
+        <FibOverlay
+          key={f.key}
+          points={pts}
+          levels={levels}
+          isPreview={f.isPreview}
+          width={areaWidth}
+          height={areaHeight}
+        />,
+      );
+    }
+  }
   void renderTick;
 
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
       {measureRender}
+      {fibRender}
 
       {/* Top-left of main pane: symbol info + OHLC + Volume pill + EMA pills */}
       <div
