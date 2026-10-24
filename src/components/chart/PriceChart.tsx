@@ -48,6 +48,13 @@ import {
   positionStats,
   type PositionSide,
 } from "@/lib/position";
+import { ELLIOTT_COLORS, ELLIOTT_POINT_COUNT, type ElliottKind } from "@/lib/elliott";
+import { ElliottOverlay, type ElliottGeometry } from "./ElliottOverlay";
+
+const ELLIOTT_TOOLS: Partial<Record<DrawingTool, ElliottKind>> = {
+  elliottImpulse: "impulse",
+  elliottCorrection: "correction",
+};
 
 const FIB_TOOLS: Partial<Record<DrawingTool, FibKind>> = {
   fibRetracement: "retracement",
@@ -65,8 +72,14 @@ interface FibDraft {
   points: FibPoint[];
 }
 
+/** Elliott wave being placed: the last point follows the mouse until clicked */
+interface ElliottDraft {
+  kind: ElliottKind;
+  points: FibPoint[];
+}
+
 /** Kind of drawing that can be selected and dragged */
-type DrawingType = "fib" | "trend" | "position";
+type DrawingType = "fib" | "trend" | "position" | "elliott";
 
 /** Drawing being dragged: a single anchor, or the whole drawing (anchor = null) */
 interface FibDrag {
@@ -198,6 +211,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const trendLines = useChartStore((s) => s.trendLines);
   const trendLineDefaults = useChartStore((s) => s.trendLineDefaults);
   const positions = useChartStore((s) => s.positions);
+  const elliotts = useChartStore((s) => s.elliotts);
   const addPriceLine = useChartStore((s) => s.addPriceLine);
   const removeIndicator = useChartStore((s) => s.removeIndicator);
   const toggleHidden = useChartStore((s) => s.toggleHidden);
@@ -224,6 +238,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const [fibDraft, setFibDraft] = useState<FibDraft | null>(null);
   const fibDraftRef = useRef(fibDraft);
   fibDraftRef.current = fibDraft;
+  const [elliottDraft, setElliottDraft] = useState<ElliottDraft | null>(null);
+  const elliottDraftRef = useRef(elliottDraft);
+  elliottDraftRef.current = elliottDraft;
   /** Trend line being placed: B follows the mouse until clicked / released */
   const [trendDraft, setTrendDraft] = useState<FibPoint[] | null>(null);
   const trendDraftRef = useRef(trendDraft);
@@ -237,6 +254,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
   );
   const trendGeometryRef = useRef<Map<string, TrendGeometry & { locked: boolean }>>(new Map());
   const positionGeometryRef = useRef<Map<string, PositionGeometry & { locked: boolean }>>(new Map());
+  const elliottGeometryRef = useRef<Map<string, ElliottGeometry & { locked: boolean }>>(new Map());
   /** Ctrl held: inverts the magnet while pressed */
   const ctrlHeldRef = useRef(false);
   /** Where the magnet snapped the cursor (px), shown as a dot */
@@ -485,7 +503,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
     chart.subscribeClick((param) => {
       if (!param.point || !candleSeriesRef.current) return;
       // Fib and trend line tools use their own DOM listeners (see effect below)
-      if (FIB_TOOLS[toolRef.current] || POSITION_TOOLS[toolRef.current] || toolRef.current === "trendLine") {
+      if (
+        FIB_TOOLS[toolRef.current] ||
+        POSITION_TOOLS[toolRef.current] ||
+        ELLIOTT_TOOLS[toolRef.current] ||
+        toolRef.current === "trendLine"
+      ) {
         return;
       }
 
@@ -803,12 +826,14 @@ export function PriceChart({ symbol, timeframe }: Props) {
         tool === "measure" ||
         tool === "trendLine" ||
         FIB_TOOLS[tool] ||
-        POSITION_TOOLS[tool]
+        POSITION_TOOLS[tool] ||
+        ELLIOTT_TOOLS[tool]
           ? "crosshair"
           : "";
     }
     if (tool !== "measure") setMeasure(INITIAL_MEASURE);
     setFibDraft(null);
+    setElliottDraft(null);
     setTrendDraft(null);
     if (tool !== "cursor") useChartStore.getState().selectFib(null);
     setSnapDot(null);
@@ -879,6 +904,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       const entries = [...fibGeometryRef.current.entries()].reverse();
       const trends = [...trendGeometryRef.current.entries()].reverse();
       const positionsGeo = [...positionGeometryRef.current.entries()].reverse();
+      const waves = [...elliottGeometryRef.current.entries()].reverse();
       const anchorOf = (pts: { x: number; y: number }[]) =>
         pts.findIndex((a) => Math.hypot(a.x - p.x, a.y - p.y) <= HIT_PX);
       for (const [id, g] of trends) {
@@ -889,6 +915,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
         const anchor = anchorOf(g.points);
         if (anchor >= 0) return { id, type: "position", anchor, locked: g.locked };
       }
+      for (const [id, g] of waves) {
+        const anchor = anchorOf(g.points);
+        if (anchor >= 0) return { id, type: "elliott", anchor, locked: g.locked };
+      }
       for (const [id, g] of entries) {
         const anchor = anchorOf(g.points);
         if (anchor >= 0) return { id, type: "fib", anchor, locked: g.locked };
@@ -896,6 +926,11 @@ export function PriceChart({ symbol, timeframe }: Props) {
       for (const [id, g] of trends) {
         if (distToSegment(p, g.segment[0], g.segment[1]) <= HIT_PX) {
           return { id, type: "trend", anchor: null, locked: g.locked };
+        }
+      }
+      for (const [id, g] of waves) {
+        if (g.points.some((a, i) => i > 0 && distToSegment(p, g.points[i - 1], a) <= HIT_PX)) {
+          return { id, type: "elliott", anchor: null, locked: g.locked };
         }
       }
       for (const [id, g] of positionsGeo) {
@@ -947,7 +982,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
           ? store.trendLines.find((t) => t.id === hit.id)?.points
           : position
             ? positionAnchors(position)
-            : store.fibs.find((f) => f.id === hit.id)?.points;
+            : hit.type === "elliott"
+              ? store.elliotts.find((w) => w.id === hit.id)?.points
+              : store.fibs.find((f) => f.id === hit.id)?.points;
       // Moving the whole drawing keeps its shape: only anchors snap
       const start = pointAtRef.current(local.x, local.y, false);
       if (!orig || hit.locked || !start) return;
@@ -981,6 +1018,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
           const store = useChartStore.getState();
           if (drag.type === "trend") store.updateTrendLine(drag.id, { points: drag.points });
           else if (drag.type === "position") store.updatePosition(drag.id, positionFromAnchors(drag.points));
+          else if (drag.type === "elliott") store.updateElliott(drag.id, { points: drag.points });
           else store.updateFib(drag.id, { points: drag.points });
         }
         setFibDragPoints(null);
@@ -1020,6 +1058,27 @@ export function PriceChart({ symbol, timeframe }: Props) {
       const side = POSITION_TOOLS[toolRef.current];
       if (side) {
         if (local) placePositionRef.current(side, local);
+        return;
+      }
+
+      const waveKind = ELLIOTT_TOOLS[toolRef.current];
+      if (waveKind) {
+        const p = local && pointAtRef.current(local.x, local.y);
+        if (!p) return;
+        const draft = elliottDraftRef.current;
+        if (!draft || draft.kind !== waveKind) {
+          setElliottDraft({ kind: waveKind, points: [p, p] });
+          return;
+        }
+        const fixed = [...draft.points.slice(0, -1), p];
+        if (fixed.length >= ELLIOTT_POINT_COUNT[waveKind]) {
+          const store = useChartStore.getState();
+          store.addElliott(waveKind, fixed, symbolRef.current);
+          store.setTool("cursor");
+          setElliottDraft(null);
+        } else {
+          setElliottDraft({ kind: waveKind, points: [...fixed, p] });
+        }
         return;
       }
 
@@ -1075,6 +1134,14 @@ export function PriceChart({ symbol, timeframe }: Props) {
         setTrendDraft((prev) => (prev ? [prev[0], p] : prev));
         return;
       }
+      if (ELLIOTT_TOOLS[toolRef.current]) {
+        const p = local && pointAtRef.current(local.x, local.y);
+        if (!p || !elliottDraftRef.current) return;
+        setElliottDraft((prev) =>
+          prev ? { ...prev, points: [...prev.points.slice(0, -1), p] } : prev,
+        );
+        return;
+      }
       if (!fibDraftRef.current) return;
       const p = local && pointAtRef.current(local.x, local.y);
       if (!p) return;
@@ -1096,7 +1163,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       store.selectFib(hit.id);
       if (hit.type === "trend") store.setTrendSettingsTarget(hit.id);
       else if (hit.type === "position") store.setPositionSettingsTarget(hit.id);
-      else store.setFibSettingsTarget(hit.id);
+      else if (hit.type === "fib") store.setFibSettingsTarget(hit.id);
     };
 
     // Right-click on a drawing selects it (shows its toolbar) instead of the browser menu
@@ -1114,6 +1181,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         !!store.fibSettingsTarget || !!store.trendSettingsTarget || !!store.positionSettingsTarget;
       if (e.key === "Escape") {
         setFibDraft(null);
+        setElliottDraft(null);
         trendDraftRef.current = null;
         setTrendDraft(null);
         if (!dialogOpen) store.selectFib(null);
@@ -1128,6 +1196,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         store.removeFib(store.selectedFibId);
         store.removeTrendLine(store.selectedFibId);
         store.removePosition(store.selectedFibId);
+        store.removeElliott(store.selectedFibId);
       }
     };
 
@@ -1654,6 +1723,79 @@ export function PriceChart({ symbol, timeframe }: Props) {
     }
   }
   positionGeometryRef.current = positionGeometry;
+
+  // Elliott waves for this symbol + the one being placed (drawn above fibs)
+  const elliottRender: React.ReactNode[] = [];
+  const elliottGeometry: typeof elliottGeometryRef.current = new Map();
+  if (chartRef.current && candleSeriesRef.current && paneOffsets[0]) {
+    const series = candleSeriesRef.current;
+    const areaWidth = chartRef.current.timeScale().width();
+    const areaHeight = paneOffsets[0].height;
+    const toDraw = elliotts
+      .filter((w) => w.symbol === symbol)
+      .map((w) => ({
+        key: w.id,
+        kind: w.kind,
+        points: fibDragPoints?.id === w.id ? fibDragPoints.points : w.points,
+        color: w.color,
+        locked: !!w.locked,
+        isPreview: false,
+      }));
+    if (elliottDraft) {
+      toDraw.push({
+        key: "elliott-draft",
+        kind: elliottDraft.kind,
+        points: elliottDraft.points,
+        color: ELLIOTT_COLORS[elliottDraft.kind],
+        locked: false,
+        isPreview: true,
+      });
+    }
+    for (const w of toDraw) {
+      const pts = w.points.flatMap((p) => {
+        const x = timeToCoordinate(p.time);
+        const y = series.priceToCoordinate(p.price);
+        return x === null || y === null ? [] : [{ x, y }];
+      });
+      if (pts.length !== w.points.length) continue;
+      if (!w.isPreview) elliottGeometry.set(w.key, { points: pts, locked: w.locked });
+
+      const selected = w.key === selectedFibId;
+      elliottRender.push(
+        <ElliottOverlay
+          key={w.key}
+          kind={w.kind}
+          color={w.color}
+          points={pts}
+          prices={w.points.map((p) => p.price)}
+          isPreview={w.isPreview}
+          selected={selected}
+          width={areaWidth}
+          height={areaHeight}
+        />,
+      );
+      if (selected) {
+        const ys = pts.map((p) => p.y);
+        const xs = pts.map((p) => p.x);
+        // Above the wave (and its labels); if that's off-screen, below it
+        const top = Math.min(...ys) - 22;
+        const toolbarY = top - 10 >= 90 ? top - 10 : Math.max(...ys) + 44;
+        const id = w.key;
+        const locked = w.locked;
+        fibToolbar = (
+          <FibToolbar
+            x={Math.max(80, Math.min(areaWidth - 80, (Math.min(...xs) + Math.max(...xs)) / 2))}
+            y={Math.max(40, Math.min(areaHeight - 4, toolbarY))}
+            locked={locked}
+            onToggleLock={() => useChartStore.getState().updateElliott(id, { locked: !locked })}
+            onClone={() => useChartStore.getState().cloneElliott(id)}
+            onRemove={() => useChartStore.getState().removeElliott(id)}
+          />
+        );
+      }
+    }
+  }
+  elliottGeometryRef.current = elliottGeometry;
   void renderTick;
 
   return (
@@ -1662,6 +1804,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       {measureRender}
       {fibRender}
       {positionRender}
+      {elliottRender}
       {trendRender}
       {snapDot && (
         <div

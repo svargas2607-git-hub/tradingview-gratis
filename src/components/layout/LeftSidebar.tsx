@@ -69,6 +69,24 @@ function ShortPositionIcon({ className }: { className?: string }) {
   );
 }
 
+// Elliott impulse: five-wave zigzag (1 up, 2 down, 3 up, 4 down, 5 up)
+function ElliottImpulseIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M2 20 7 11l3 4 6-11 2 6 4-4" />
+    </svg>
+  );
+}
+
+// Elliott correction: A down, B up, C down
+function ElliottCorrectionIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M3 5 9 18l4-7 8 9" />
+    </svg>
+  );
+}
+
 const TOOLS: ToolDef[] = [
   { key: "cursor", icon: MousePointer2, label: "Cursor", hint: "Modo navegación" },
   {
@@ -100,6 +118,18 @@ const TOOLS: ToolDef[] = [
     icon: FibExtensionIcon,
     label: "Extensión de Fibonacci",
     hint: "Click en A, B y el retroceso C · Esc cancela",
+  },
+  {
+    key: "elliottImpulse",
+    icon: ElliottImpulseIcon,
+    label: "Onda de impulso de Elliott (12345)",
+    hint: "Click en los 6 puntos: 0, 1, 2, 3, 4 y 5 · Esc cancela",
+  },
+  {
+    key: "elliottCorrection",
+    icon: ElliottCorrectionIcon,
+    label: "Onda de corrección de Elliott (ABC)",
+    hint: "Click en los 4 puntos: 0, A, B y C · Esc cancela",
   },
   {
     key: "longPosition",
@@ -205,6 +235,7 @@ export function LeftSidebar() {
   const clearFibs = useChartStore((s) => s.clearFibs);
   const clearTrendLines = useChartStore((s) => s.clearTrendLines);
   const clearPositions = useChartStore((s) => s.clearPositions);
+  const clearElliotts = useChartStore((s) => s.clearElliotts);
   const symbol = useChartStore((s) => s.symbol);
 
   return (
@@ -247,6 +278,7 @@ export function LeftSidebar() {
             clearFibs(symbol);
             clearTrendLines(symbol);
             clearPositions(symbol);
+            clearElliotts(symbol);
           }}
           aria-label="Borrar dibujos"
           className="flex h-8 w-8 items-center justify-center rounded text-tv-text-muted hover:bg-tv-panel-hover hover:text-tv-red"
@@ -256,7 +288,7 @@ export function LeftSidebar() {
         <TooltipContent side="right" className="text-xs">
           <div className="font-medium">Borrar dibujos</div>
           <div className="mt-0.5 text-[10px] text-tv-text-muted">
-            Limpia las líneas, tendencias, Fibonacci y posiciones de este símbolo
+            Limpia las líneas, tendencias, Fibonacci, posiciones y ondas de Elliott de este símbolo
           </div>
         </TooltipContent>
       </Tooltip>

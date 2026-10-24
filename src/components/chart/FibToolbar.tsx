@@ -7,7 +7,8 @@ interface Props {
   x: number;
   y: number;
   locked: boolean;
-  onSettings: () => void;
+  /** Missing for drawings without a settings dialog (hides the gear) */
+  onSettings?: () => void;
   onToggleLock: () => void;
   onClone: () => void;
   onRemove: () => void;
@@ -25,9 +26,11 @@ export function FibToolbar({ x, y, locked, onSettings, onToggleLock, onClone, on
       onMouseDown={(e) => e.stopPropagation()}
       className="absolute z-30 flex -translate-x-1/2 -translate-y-full items-center gap-0.5 rounded-md bg-tv-panel p-0.5 shadow-lg ring-1 ring-tv-border"
     >
-      <button onClick={onSettings} title="Configuración" aria-label="Configuración" className={btn}>
-        <Settings className="h-3.5 w-3.5" />
-      </button>
+      {onSettings && (
+        <button onClick={onSettings} title="Configuración" aria-label="Configuración" className={btn}>
+          <Settings className="h-3.5 w-3.5" />
+        </button>
+      )}
       <button
         onClick={onToggleLock}
         title={locked ? "Desbloquear" : "Bloquear"}

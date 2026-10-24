@@ -16,6 +16,7 @@ import {
   type PositionShape,
   type PositionSide,
 } from "@/lib/position";
+import { ELLIOTT_COLORS, type ElliottKind } from "@/lib/elliott";
 
 export type IndicatorKey =
   | "ema20"
@@ -34,6 +35,8 @@ export type DrawingTool =
   | "fibExtension"
   | "longPosition"
   | "shortPosition"
+  | "elliottImpulse"
+  | "elliottCorrection"
   | "eraser";
 
 /** Weak snaps only near an O/H/L/C; strong always snaps to the closest one */
@@ -78,6 +81,16 @@ export interface PositionDrawing extends PositionShape {
   symbol: string;
   side: PositionSide;
   settings: PositionSettings;
+  locked?: boolean;
+}
+
+export interface ElliottDrawing {
+  id: string;
+  symbol: string;
+  kind: ElliottKind;
+  /** impulse: [0, 1, 2, 3, 4, 5] · correction: [0, A, B, C] */
+  points: FibPoint[];
+  color: string;
   locked?: boolean;
 }
 
@@ -151,6 +164,8 @@ interface ChartState {
   positions: PositionDrawing[];
   /** Inputs and style new positions start with (null = TradingView defaults) */
   positionDefaults: PositionSettings | null;
+  /** Elliott impulse / correction waves (persisted, filtered by symbol when rendering) */
+  elliotts: ElliottDrawing[];
   /** Magnet: drawing points snap to the OHLC of the bar under the cursor */
   magnet: boolean;
   magnetMode: MagnetMode;
@@ -161,7 +176,7 @@ interface ChartState {
   symbolDialogOpen: boolean;
   /** Which indicator's settings dialog is open (null = closed) */
   settingsTarget: IndicatorKey | null;
-  /** Selected drawing: a fib, trend line or position (ids never collide) */
+  /** Selected drawing: a fib, trend line, position or Elliott wave (ids never collide) */
   selectedFibId: string | null;
   /** Fib whose settings dialog is open (null = closed) */
   fibSettingsTarget: string | null;
@@ -205,6 +220,12 @@ interface ChartState {
   clonePosition: (id: string) => void;
   setPositionSettingsTarget: (id: string | null) => void;
   setPositionDefaults: (settings: PositionSettings | null) => void;
+  /** Adds the wave and selects it, like TradingView */
+  addElliott: (kind: ElliottKind, points: FibPoint[], symbol: string) => void;
+  clearElliotts: (symbol?: string) => void;
+  updateElliott: (id: string, patch: Partial<Omit<ElliottDrawing, "id">>) => void;
+  removeElliott: (id: string) => void;
+  cloneElliott: (id: string) => void;
   setMagnet: (on: boolean) => void;
   /** Picking a mode also turns the magnet on, like TradingView */
   setMagnetMode: (mode: MagnetMode) => void;
@@ -241,6 +262,7 @@ export const useChartStore = create<ChartState>()(
       trendLineDefaults: null,
       positions: [],
       positionDefaults: null,
+      elliotts: [],
       magnet: false,
       magnetMode: "weak",
       tool: "cursor",
@@ -434,6 +456,38 @@ export const useChartStore = create<ChartState>()(
         }),
       setPositionSettingsTarget: (positionSettingsTarget) => set({ positionSettingsTarget }),
       setPositionDefaults: (settings) => set({ positionDefaults: settings && { ...settings } }),
+      addElliott: (kind, points, symbol) =>
+        set((state) => {
+          const id = newId();
+          const wave: ElliottDrawing = { id, symbol, kind, points, color: ELLIOTT_COLORS[kind] };
+          return { elliotts: [...state.elliotts, wave], selectedFibId: id };
+        }),
+      clearElliotts: (symbol) =>
+        set((state) => ({
+          elliotts: symbol ? state.elliotts.filter((w) => w.symbol !== symbol) : [],
+          selectedFibId: null,
+        })),
+      updateElliott: (id, patch) =>
+        set((state) => ({
+          elliotts: state.elliotts.map((w) => (w.id === id ? { ...w, ...patch } : w)),
+        })),
+      removeElliott: (id) =>
+        set((state) => ({
+          elliotts: state.elliotts.filter((w) => w.id !== id),
+          selectedFibId: state.selectedFibId === id ? null : state.selectedFibId,
+        })),
+      cloneElliott: (id) =>
+        set((state) => {
+          const src = state.elliotts.find((w) => w.id === id);
+          if (!src) return {};
+          const copy: ElliottDrawing = {
+            ...src,
+            id: newId(),
+            points: src.points.map((p) => ({ ...p })),
+            locked: false,
+          };
+          return { elliotts: [...state.elliotts, copy], selectedFibId: copy.id };
+        }),
       setMagnet: (magnet) => set({ magnet }),
       setMagnetMode: (magnetMode) => set({ magnetMode, magnet: true }),
       setSymbolDialogOpen: (symbolDialogOpen) => set({ symbolDialogOpen }),
@@ -501,6 +555,7 @@ export const useChartStore = create<ChartState>()(
         trendLineDefaults: s.trendLineDefaults,
         positions: s.positions,
         positionDefaults: s.positionDefaults,
+        elliotts: s.elliotts,
         magnet: s.magnet,
         magnetMode: s.magnetMode,
       }),
