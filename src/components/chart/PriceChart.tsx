@@ -38,10 +38,25 @@ import { FibOverlay, fibSpan, type FibGeometry } from "./FibOverlay";
 import { FibToolbar } from "./FibToolbar";
 import { TrendLineOverlay, type TrendGeometry } from "./TrendLineOverlay";
 import { defaultTrendLineSettings, trendLineSettingsOf, trendSegment } from "@/lib/trendline";
+import { PositionOverlay, type PositionGeometry, type PositionTrade } from "./PositionOverlay";
+import {
+  dragPositionAnchor,
+  positionAnchors,
+  positionFromAnchors,
+  positionOutcome,
+  positionSettingsOf,
+  positionStats,
+  type PositionSide,
+} from "@/lib/position";
 
 const FIB_TOOLS: Partial<Record<DrawingTool, FibKind>> = {
   fibRetracement: "retracement",
   fibExtension: "extension",
+};
+
+const POSITION_TOOLS: Partial<Record<DrawingTool, PositionSide>> = {
+  longPosition: "long",
+  shortPosition: "short",
 };
 
 /** Fib being placed: the last point follows the mouse until clicked */
@@ -51,7 +66,7 @@ interface FibDraft {
 }
 
 /** Kind of drawing that can be selected and dragged */
-type DrawingType = "fib" | "trend";
+type DrawingType = "fib" | "trend" | "position";
 
 /** Drawing being dragged: a single anchor, or the whole drawing (anchor = null) */
 interface FibDrag {
@@ -182,6 +197,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const selectedFibId = useChartStore((s) => s.selectedFibId);
   const trendLines = useChartStore((s) => s.trendLines);
   const trendLineDefaults = useChartStore((s) => s.trendLineDefaults);
+  const positions = useChartStore((s) => s.positions);
   const addPriceLine = useChartStore((s) => s.addPriceLine);
   const removeIndicator = useChartStore((s) => s.removeIndicator);
   const toggleHidden = useChartStore((s) => s.toggleHidden);
@@ -220,6 +236,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
     new Map(),
   );
   const trendGeometryRef = useRef<Map<string, TrendGeometry & { locked: boolean }>>(new Map());
+  const positionGeometryRef = useRef<Map<string, PositionGeometry & { locked: boolean }>>(new Map());
   /** Ctrl held: inverts the magnet while pressed */
   const ctrlHeldRef = useRef(false);
   /** Where the magnet snapped the cursor (px), shown as a dot */
@@ -339,6 +356,49 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const updateSnapDotRef = useRef(updateSnapDot);
   updateSnapDotRef.current = updateSnapDot;
 
+  /**
+   * Places a position with one click at `local`, like TradingView: the stop
+   * 10% of the pane height away, the target twice as far (ratio 2) and 15% of
+   * the chart width wide.
+   */
+  function placePosition(side: PositionSide, local: { x: number; y: number }) {
+    const chart = chartRef.current;
+    const series = candleSeriesRef.current;
+    const entry = pointAt(local.x, local.y);
+    if (!chart || !series || !entry) return;
+    const yEntry = series.priceToCoordinate(entry.price) ?? local.y;
+    const step = (chart.panes()[0]?.getHeight() ?? 400) * 0.1;
+    const below = series.coordinateToPrice(yEntry + step);
+    const endTime = coordinateToTime(local.x + chart.timeScale().width() * 0.15);
+    if (below === null || endTime === null) return;
+    const risk = Math.max(entry.price - below, entry.price * 1e-4);
+    const dir = side === "long" ? 1 : -1;
+    const store = useChartStore.getState();
+    store.addPosition(
+      side,
+      {
+        entry,
+        endTime: Math.max(endTime, entry.time + barSeconds(series.data())),
+        tp: entry.price + dir * risk * 2,
+        sl: entry.price - dir * risk,
+      },
+      symbolRef.current,
+    );
+    store.setTool("cursor");
+  }
+  const placePositionRef = useRef(placePosition);
+  placePositionRef.current = placePosition;
+
+  /** Anchors of a position after dragging one of its handles */
+  function dragPosition(id: string, orig: FibPoint[], anchor: number, p: FibPoint): FibPoint[] {
+    const pos = useChartStore.getState().positions.find((q) => q.id === id);
+    if (!pos) return orig;
+    const minDt = barSeconds(candleSeriesRef.current?.data() ?? []);
+    return dragPositionAnchor(pos.side, orig, anchor, p, minDt);
+  }
+  const dragPositionRef = useRef(dragPosition);
+  dragPositionRef.current = dragPosition;
+
   // Helper — compute pane top offsets from chart layout
   function recomputePaneOffsets() {
     if (!chartRef.current) return;
@@ -425,7 +485,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
     chart.subscribeClick((param) => {
       if (!param.point || !candleSeriesRef.current) return;
       // Fib and trend line tools use their own DOM listeners (see effect below)
-      if (FIB_TOOLS[toolRef.current] || toolRef.current === "trendLine") return;
+      if (FIB_TOOLS[toolRef.current] || POSITION_TOOLS[toolRef.current] || toolRef.current === "trendLine") {
+        return;
+      }
 
       const p = pointAtRef.current(param.point.x, param.point.y);
       if (!p) return;
@@ -737,7 +799,11 @@ export function PriceChart({ symbol, timeframe }: Props) {
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.style.cursor =
-        tool === "hline" || tool === "measure" || tool === "trendLine" || FIB_TOOLS[tool]
+        tool === "hline" ||
+        tool === "measure" ||
+        tool === "trendLine" ||
+        FIB_TOOLS[tool] ||
+        POSITION_TOOLS[tool]
           ? "crosshair"
           : "";
     }
@@ -805,15 +871,23 @@ export function PriceChart({ symbol, timeframe }: Props) {
       return { x, y };
     };
 
-    /** Topmost drawing under the pointer (anchors win over lines, trend lines over fibs) */
+    /**
+     * Topmost drawing under the pointer (anchors win over lines, then trend
+     * lines, positions and fibs)
+     */
     const hitTest = (p: { x: number; y: number }): FibHit | null => {
       const entries = [...fibGeometryRef.current.entries()].reverse();
       const trends = [...trendGeometryRef.current.entries()].reverse();
+      const positionsGeo = [...positionGeometryRef.current.entries()].reverse();
       const anchorOf = (pts: { x: number; y: number }[]) =>
         pts.findIndex((a) => Math.hypot(a.x - p.x, a.y - p.y) <= HIT_PX);
       for (const [id, g] of trends) {
         const anchor = anchorOf(g.points);
         if (anchor >= 0) return { id, type: "trend", anchor, locked: g.locked };
+      }
+      for (const [id, g] of positionsGeo) {
+        const anchor = anchorOf(g.points);
+        if (anchor >= 0) return { id, type: "position", anchor, locked: g.locked };
       }
       for (const [id, g] of entries) {
         const anchor = anchorOf(g.points);
@@ -822,6 +896,13 @@ export function PriceChart({ symbol, timeframe }: Props) {
       for (const [id, g] of trends) {
         if (distToSegment(p, g.segment[0], g.segment[1]) <= HIT_PX) {
           return { id, type: "trend", anchor: null, locked: g.locked };
+        }
+      }
+      for (const [id, g] of positionsGeo) {
+        const top = Math.min(g.yTp, g.ySl);
+        const bottom = Math.max(g.yTp, g.ySl);
+        if (p.x >= g.x1 && p.x <= g.x2 && p.y >= top && p.y <= bottom) {
+          return { id, type: "position", anchor: null, locked: g.locked };
         }
       }
       for (const [id, g] of entries) {
@@ -860,19 +941,22 @@ export function PriceChart({ symbol, timeframe }: Props) {
       if (!hit) return;
       const store = useChartStore.getState();
       store.selectFib(hit.id);
-      const drawing =
+      const position = hit.type === "position" ? store.positions.find((q) => q.id === hit.id) : null;
+      const orig =
         hit.type === "trend"
-          ? store.trendLines.find((t) => t.id === hit.id)
-          : store.fibs.find((f) => f.id === hit.id);
+          ? store.trendLines.find((t) => t.id === hit.id)?.points
+          : position
+            ? positionAnchors(position)
+            : store.fibs.find((f) => f.id === hit.id)?.points;
       // Moving the whole drawing keeps its shape: only anchors snap
       const start = pointAtRef.current(local.x, local.y, false);
-      if (!drawing || hit.locked || !start) return;
+      if (!orig || hit.locked || !start) return;
       fibDragRef.current = {
         id: hit.id,
         type: hit.type,
         anchor: hit.anchor,
         start,
-        orig: drawing.points,
+        orig,
         moved: false,
       };
     };
@@ -896,6 +980,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         if (drag.moved && drag.points) {
           const store = useChartStore.getState();
           if (drag.type === "trend") store.updateTrendLine(drag.id, { points: drag.points });
+          else if (drag.type === "position") store.updatePosition(drag.id, positionFromAnchors(drag.points));
           else store.updateFib(drag.id, { points: drag.points });
         }
         setFibDragPoints(null);
@@ -932,6 +1017,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
         return;
       }
 
+      const side = POSITION_TOOLS[toolRef.current];
+      if (side) {
+        if (local) placePositionRef.current(side, local);
+        return;
+      }
+
       if (!kind) return;
       const p = local && pointAtRef.current(local.x, local.y);
       if (!p) return;
@@ -965,7 +1056,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
                 time: q.time + (p.time - drag.start.time),
                 price: q.price + (p.price - drag.start.price),
               }))
-            : drag.orig.map((q, i) => (i === drag.anchor ? p : q));
+            : drag.type === "position"
+              ? dragPositionRef.current(drag.id, drag.orig, drag.anchor, p)
+              : drag.orig.map((q, i) => (i === drag.anchor ? p : q));
         drag.moved = true;
         drag.points = points;
         setFibDragPoints({ id: drag.id, points });
@@ -1002,6 +1095,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       const store = useChartStore.getState();
       store.selectFib(hit.id);
       if (hit.type === "trend") store.setTrendSettingsTarget(hit.id);
+      else if (hit.type === "position") store.setPositionSettingsTarget(hit.id);
       else store.setFibSettingsTarget(hit.id);
     };
 
@@ -1016,7 +1110,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
     const onKey = (e: KeyboardEvent) => {
       const store = useChartStore.getState();
-      const dialogOpen = !!store.fibSettingsTarget || !!store.trendSettingsTarget;
+      const dialogOpen =
+        !!store.fibSettingsTarget || !!store.trendSettingsTarget || !!store.positionSettingsTarget;
       if (e.key === "Escape") {
         setFibDraft(null);
         trendDraftRef.current = null;
@@ -1029,9 +1124,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
       if (target?.closest("input, textarea, select, [contenteditable=true]")) return;
       if (store.selectedFibId && !dialogOpen) {
         e.preventDefault();
-        // Ids are unique across both lists: only the owner removes anything
+        // Ids are unique across all lists: only the owner removes anything
         store.removeFib(store.selectedFibId);
         store.removeTrendLine(store.selectedFibId);
+        store.removePosition(store.selectedFibId);
       }
     };
 
@@ -1469,6 +1565,95 @@ export function PriceChart({ symbol, timeframe }: Props) {
     }
   }
   trendGeometryRef.current = trendGeometry;
+
+  // Long / short positions for this symbol (drawn above fibs, below trend lines)
+  const positionRender: React.ReactNode[] = [];
+  const positionGeometry: typeof positionGeometryRef.current = new Map();
+  if (chartRef.current && candleSeriesRef.current && paneOffsets[0]) {
+    const series = candleSeriesRef.current;
+    const areaWidth = chartRef.current.timeScale().width();
+    const areaHeight = paneOffsets[0].height;
+    for (const pos of positions) {
+      if (pos.symbol !== symbol) continue;
+      const shape =
+        fibDragPoints?.id === pos.id ? positionFromAnchors(fibDragPoints.points) : pos;
+      const settings = positionSettingsOf(pos.settings);
+      const x1 = timeToCoordinate(shape.entry.time);
+      const x2 = timeToCoordinate(shape.endTime);
+      const yEntry = series.priceToCoordinate(shape.entry.price);
+      const yTp = series.priceToCoordinate(shape.tp);
+      const ySl = series.priceToCoordinate(shape.sl);
+      if (x1 === null || x2 === null || yEntry === null || yTp === null || ySl === null) continue;
+      const geometry: PositionGeometry = {
+        points: [
+          { x: x1, y: yEntry },
+          { x: x1, y: yTp },
+          { x: x1, y: ySl },
+          { x: x2, y: yEntry },
+        ],
+        x1,
+        x2,
+        yEntry,
+        yTp,
+        ySl,
+      };
+      positionGeometry.set(pos.id, { ...geometry, locked: !!pos.locked });
+
+      const stats = positionStats(shape, settings);
+      const outcome = positionOutcome(shape, pos.side, candlesRef.current);
+      const dir = pos.side === "long" ? 1 : -1;
+      let pnl: number | null = null;
+      let trade: PositionTrade | null = null;
+      if (outcome.openTime !== undefined && outcome.exitPrice !== undefined && outcome.exitTime !== undefined) {
+        pnl = (outcome.exitPrice - shape.entry.price) * dir * stats.qty * settings.lotSize;
+        const tx1 = timeToCoordinate(outcome.openTime);
+        const tx2 = timeToCoordinate(outcome.exitTime);
+        const yExit = series.priceToCoordinate(outcome.exitPrice);
+        if (tx1 !== null && tx2 !== null && yExit !== null) {
+          trade = { x1: tx1, x2: tx2, yExit, profit: pnl >= 0 };
+        }
+      }
+
+      const selected = pos.id === selectedFibId;
+      positionRender.push(
+        <PositionOverlay
+          key={pos.id}
+          {...geometry}
+          settings={settings}
+          stats={stats}
+          prices={{ tp: shape.tp, sl: shape.sl }}
+          outcome={outcome}
+          pnl={pnl}
+          trade={trade}
+          isPreview={false}
+          selected={selected}
+          width={areaWidth}
+          height={areaHeight}
+        />,
+      );
+      if (selected) {
+        // Above the box and its top label; if that's off-screen, below the box
+        const labelH = settings.showLabels ? settings.fontSize + 14 : 0;
+        const top = Math.min(yTp, ySl) - labelH;
+        const bottom = Math.max(yTp, ySl) + labelH;
+        const toolbarY = top - 10 >= 90 ? top - 10 : bottom + 44;
+        const id = pos.id;
+        const locked = !!pos.locked;
+        fibToolbar = (
+          <FibToolbar
+            x={Math.max(80, Math.min(areaWidth - 80, (x1 + x2) / 2))}
+            y={Math.max(40, Math.min(areaHeight - 4, toolbarY))}
+            locked={locked}
+            onSettings={() => useChartStore.getState().setPositionSettingsTarget(id)}
+            onToggleLock={() => useChartStore.getState().updatePosition(id, { locked: !locked })}
+            onClone={() => useChartStore.getState().clonePosition(id)}
+            onRemove={() => useChartStore.getState().removePosition(id)}
+          />
+        );
+      }
+    }
+  }
+  positionGeometryRef.current = positionGeometry;
   void renderTick;
 
   return (
@@ -1476,6 +1661,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       <div ref={containerRef} className="h-full w-full" />
       {measureRender}
       {fibRender}
+      {positionRender}
       {trendRender}
       {snapDot && (
         <div

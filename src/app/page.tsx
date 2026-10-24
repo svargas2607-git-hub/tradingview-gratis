@@ -8,6 +8,7 @@ import { PriceChart } from "@/components/chart/PriceChart";
 import { IndicatorSettingsDialog } from "@/components/chart/IndicatorSettingsDialog";
 import { FibSettingsDialog } from "@/components/chart/FibSettingsDialog";
 import { TrendLineSettingsDialog } from "@/components/chart/TrendLineSettingsDialog";
+import { PositionSettingsDialog } from "@/components/chart/PositionSettingsDialog";
 import { useChartStore } from "@/lib/store/chart-store";
 
 export default function HomePage() {
@@ -30,6 +31,7 @@ export default function HomePage() {
       <IndicatorSettingsDialog />
       <FibSettingsDialog />
       <TrendLineSettingsDialog />
+      <PositionSettingsDialog />
     </div>
   );
 }

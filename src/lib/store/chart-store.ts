@@ -10,6 +10,12 @@ import {
   type FibSettings,
 } from "@/lib/fibonacci";
 import { defaultTrendLineSettings, type TrendLineSettings } from "@/lib/trendline";
+import {
+  defaultPositionSettings,
+  type PositionSettings,
+  type PositionShape,
+  type PositionSide,
+} from "@/lib/position";
 
 export type IndicatorKey =
   | "ema20"
@@ -26,6 +32,8 @@ export type DrawingTool =
   | "trendLine"
   | "fibRetracement"
   | "fibExtension"
+  | "longPosition"
+  | "shortPosition"
   | "eraser";
 
 /** Weak snaps only near an O/H/L/C; strong always snaps to the closest one */
@@ -62,6 +70,14 @@ export interface TrendLineDrawing {
   /** [A, B] */
   points: FibPoint[];
   settings: TrendLineSettings;
+  locked?: boolean;
+}
+
+export interface PositionDrawing extends PositionShape {
+  id: string;
+  symbol: string;
+  side: PositionSide;
+  settings: PositionSettings;
   locked?: boolean;
 }
 
@@ -131,6 +147,10 @@ interface ChartState {
   trendLines: TrendLineDrawing[];
   /** Style new trend lines start with (null = TradingView defaults) */
   trendLineDefaults: TrendLineSettings | null;
+  /** Long / short positions (persisted, filtered by symbol when rendering) */
+  positions: PositionDrawing[];
+  /** Inputs and style new positions start with (null = TradingView defaults) */
+  positionDefaults: PositionSettings | null;
   /** Magnet: drawing points snap to the OHLC of the bar under the cursor */
   magnet: boolean;
   magnetMode: MagnetMode;
@@ -141,12 +161,14 @@ interface ChartState {
   symbolDialogOpen: boolean;
   /** Which indicator's settings dialog is open (null = closed) */
   settingsTarget: IndicatorKey | null;
-  /** Selected drawing: a fib or a trend line (ids never collide) */
+  /** Selected drawing: a fib, trend line or position (ids never collide) */
   selectedFibId: string | null;
   /** Fib whose settings dialog is open (null = closed) */
   fibSettingsTarget: string | null;
   /** Trend line whose settings dialog is open (null = closed) */
   trendSettingsTarget: string | null;
+  /** Position whose settings dialog is open (null = closed) */
+  positionSettingsTarget: string | null;
 
   // Actions
   setSymbol: (s: string) => void;
@@ -175,6 +197,14 @@ interface ChartState {
   cloneTrendLine: (id: string) => void;
   setTrendSettingsTarget: (id: string | null) => void;
   setTrendLineDefaults: (settings: TrendLineSettings | null) => void;
+  /** Adds the position and selects it, like TradingView */
+  addPosition: (side: PositionSide, shape: PositionShape, symbol: string) => void;
+  clearPositions: (symbol?: string) => void;
+  updatePosition: (id: string, patch: Partial<Omit<PositionDrawing, "id">>) => void;
+  removePosition: (id: string) => void;
+  clonePosition: (id: string) => void;
+  setPositionSettingsTarget: (id: string | null) => void;
+  setPositionDefaults: (settings: PositionSettings | null) => void;
   setMagnet: (on: boolean) => void;
   /** Picking a mode also turns the magnet on, like TradingView */
   setMagnetMode: (mode: MagnetMode) => void;
@@ -209,6 +239,8 @@ export const useChartStore = create<ChartState>()(
       fibDefaults: {},
       trendLines: [],
       trendLineDefaults: null,
+      positions: [],
+      positionDefaults: null,
       magnet: false,
       magnetMode: "weak",
       tool: "cursor",
@@ -218,6 +250,7 @@ export const useChartStore = create<ChartState>()(
       selectedFibId: null,
       fibSettingsTarget: null,
       trendSettingsTarget: null,
+      positionSettingsTarget: null,
 
       setSymbol: (symbol) => set({ symbol }),
       setTimeframe: (timeframe) => set({ timeframe }),
@@ -357,6 +390,50 @@ export const useChartStore = create<ChartState>()(
       setTrendSettingsTarget: (trendSettingsTarget) => set({ trendSettingsTarget }),
       setTrendLineDefaults: (settings) =>
         set({ trendLineDefaults: settings && { ...settings } }),
+      addPosition: (side, shape, symbol) =>
+        set((state) => {
+          const id = newId();
+          const position: PositionDrawing = {
+            id,
+            symbol,
+            side,
+            ...shape,
+            settings: { ...(state.positionDefaults ?? defaultPositionSettings()) },
+          };
+          return { positions: [...state.positions, position], selectedFibId: id };
+        }),
+      clearPositions: (symbol) =>
+        set((state) => ({
+          positions: symbol ? state.positions.filter((p) => p.symbol !== symbol) : [],
+          selectedFibId: null,
+          positionSettingsTarget: null,
+        })),
+      updatePosition: (id, patch) =>
+        set((state) => ({
+          positions: state.positions.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+        })),
+      removePosition: (id) =>
+        set((state) => ({
+          positions: state.positions.filter((p) => p.id !== id),
+          selectedFibId: state.selectedFibId === id ? null : state.selectedFibId,
+          positionSettingsTarget:
+            state.positionSettingsTarget === id ? null : state.positionSettingsTarget,
+        })),
+      clonePosition: (id) =>
+        set((state) => {
+          const src = state.positions.find((p) => p.id === id);
+          if (!src) return {};
+          const copy: PositionDrawing = {
+            ...src,
+            id: newId(),
+            entry: { ...src.entry },
+            settings: { ...src.settings },
+            locked: false,
+          };
+          return { positions: [...state.positions, copy], selectedFibId: copy.id };
+        }),
+      setPositionSettingsTarget: (positionSettingsTarget) => set({ positionSettingsTarget }),
+      setPositionDefaults: (settings) => set({ positionDefaults: settings && { ...settings } }),
       setMagnet: (magnet) => set({ magnet }),
       setMagnetMode: (magnetMode) => set({ magnetMode, magnet: true }),
       setSymbolDialogOpen: (symbolDialogOpen) => set({ symbolDialogOpen }),
@@ -407,6 +484,8 @@ export const useChartStore = create<ChartState>()(
         fibDefaults: s.fibDefaults,
         trendLines: s.trendLines,
         trendLineDefaults: s.trendLineDefaults,
+        positions: s.positions,
+        positionDefaults: s.positionDefaults,
         magnet: s.magnet,
         magnetMode: s.magnetMode,
       }),
