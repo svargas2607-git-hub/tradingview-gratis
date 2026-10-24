@@ -13,6 +13,16 @@ interface ToolDef {
 }
 
 // lucide has no Fibonacci icons — drawn in the same 24px stroke style
+function TrendLineIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" className={className}>
+      <path d="M6.5 17.5 17.5 6.5" />
+      <circle cx="5" cy="19" r="2" />
+      <circle cx="19" cy="5" r="2" />
+    </svg>
+  );
+}
+
 function FibRetracementIcon({ className }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" className={className}>
@@ -41,6 +51,12 @@ const TOOLS: ToolDef[] = [
     hint: "Click en el chart para marcar un precio",
   },
   {
+    key: "trendLine",
+    icon: TrendLineIcon,
+    label: "Línea de tendencia",
+    hint: "Click en dos puntos o arrastrá · Esc cancela",
+  },
+  {
     key: "measure",
     icon: Ruler,
     label: "Regla / Medir",
@@ -61,7 +77,6 @@ const TOOLS: ToolDef[] = [
 ];
 
 const LOCKED = [
-  { label: "Línea de tendencia" },
   { label: "Texto" },
 ];
 
@@ -70,6 +85,7 @@ export function LeftSidebar() {
   const setTool = useChartStore((s) => s.setTool);
   const clearPriceLines = useChartStore((s) => s.clearPriceLines);
   const clearFibs = useChartStore((s) => s.clearFibs);
+  const clearTrendLines = useChartStore((s) => s.clearTrendLines);
   const symbol = useChartStore((s) => s.symbol);
 
   return (
@@ -106,6 +122,7 @@ export function LeftSidebar() {
           onClick={() => {
             clearPriceLines(symbol);
             clearFibs(symbol);
+            clearTrendLines(symbol);
           }}
           aria-label="Borrar dibujos"
           className="flex h-8 w-8 items-center justify-center rounded text-tv-text-muted hover:bg-tv-panel-hover hover:text-tv-red"
@@ -115,7 +132,7 @@ export function LeftSidebar() {
         <TooltipContent side="right" className="text-xs">
           <div className="font-medium">Borrar dibujos</div>
           <div className="mt-0.5 text-[10px] text-tv-text-muted">
-            Limpia las líneas y Fibonacci de este símbolo
+            Limpia las líneas, tendencias y Fibonacci de este símbolo
           </div>
         </TooltipContent>
       </Tooltip>

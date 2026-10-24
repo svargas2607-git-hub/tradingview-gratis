@@ -26,10 +26,18 @@ import {
   type IndicatorKey,
 } from "@/lib/store/chart-store";
 import { formatPrice, formatVolume } from "@/lib/format";
-import { FIB_POINT_COUNT, fibLevels } from "@/lib/fibonacci";
+import {
+  defaultFibSettings,
+  FIB_POINT_COUNT,
+  fibLevels,
+  fibSettingsOf,
+} from "@/lib/fibonacci";
 import { IndicatorPill } from "./IndicatorPill";
 import { MeasureOverlay } from "./MeasureOverlay";
-import { FibOverlay } from "./FibOverlay";
+import { FibOverlay, fibSpan, type FibGeometry } from "./FibOverlay";
+import { FibToolbar } from "./FibToolbar";
+import { TrendLineOverlay, type TrendGeometry } from "./TrendLineOverlay";
+import { defaultTrendLineSettings, trendLineSettingsOf, trendSegment } from "@/lib/trendline";
 
 const FIB_TOOLS: Partial<Record<DrawingTool, FibKind>> = {
   fibRetracement: "retracement",
@@ -40,6 +48,43 @@ const FIB_TOOLS: Partial<Record<DrawingTool, FibKind>> = {
 interface FibDraft {
   kind: FibKind;
   points: FibPoint[];
+}
+
+/** Kind of drawing that can be selected and dragged */
+type DrawingType = "fib" | "trend";
+
+/** Drawing being dragged: a single anchor, or the whole drawing (anchor = null) */
+interface FibDrag {
+  id: string;
+  type: DrawingType;
+  anchor: number | null;
+  start: FibPoint;
+  orig: FibPoint[];
+  moved: boolean;
+  /** Latest dragged position, committed on release */
+  points?: FibPoint[];
+}
+
+interface FibHit {
+  id: string;
+  type: DrawingType;
+  anchor: number | null;
+  locked: boolean;
+}
+
+/** Hit tolerance in px for fib lines and anchors */
+const HIT_PX = 6;
+
+function distToSegment(
+  p: { x: number; y: number },
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
 }
 
 interface MeasurePoint {
@@ -131,6 +176,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const tool = useChartStore((s) => s.tool);
   const priceLines = useChartStore((s) => s.priceLines);
   const fibs = useChartStore((s) => s.fibs);
+  const fibDefaults = useChartStore((s) => s.fibDefaults);
+  const selectedFibId = useChartStore((s) => s.selectedFibId);
+  const trendLines = useChartStore((s) => s.trendLines);
+  const trendLineDefaults = useChartStore((s) => s.trendLineDefaults);
   const addPriceLine = useChartStore((s) => s.addPriceLine);
   const removeIndicator = useChartStore((s) => s.removeIndicator);
   const toggleHidden = useChartStore((s) => s.toggleHidden);
@@ -157,6 +206,18 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const [fibDraft, setFibDraft] = useState<FibDraft | null>(null);
   const fibDraftRef = useRef(fibDraft);
   fibDraftRef.current = fibDraft;
+  /** Trend line being placed: B follows the mouse until clicked / released */
+  const [trendDraft, setTrendDraft] = useState<FibPoint[] | null>(null);
+  const trendDraftRef = useRef(trendDraft);
+  trendDraftRef.current = trendDraft;
+  /** Points of the drawing being dragged, committed to the store on release */
+  const [fibDragPoints, setFibDragPoints] = useState<{ id: string; points: FibPoint[] } | null>(null);
+  const fibDragRef = useRef<FibDrag | null>(null);
+  /** Last rendered pixel layout of each visible fib, for hit-testing */
+  const fibGeometryRef = useRef<Map<string, FibGeometry & { locked: boolean; background: boolean }>>(
+    new Map(),
+  );
+  const trendGeometryRef = useRef<Map<string, TrendGeometry & { locked: boolean }>>(new Map());
 
   /** Seconds per bar, from the last two loaded candles */
   function barSeconds(data: readonly { time: unknown }[]): number {
@@ -308,8 +369,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
     // Click handler — add horizontal price line when hline tool is active
     chart.subscribeClick((param) => {
       if (!param.point || !candleSeriesRef.current) return;
-      // Fib tools use their own DOM listeners (see effect below)
-      if (FIB_TOOLS[toolRef.current]) return;
+      // Fib and trend line tools use their own DOM listeners (see effect below)
+      if (FIB_TOOLS[toolRef.current] || toolRef.current === "trendLine") return;
 
       const price = candleSeriesRef.current.coordinateToPrice(param.point.y);
       if (price === null || !isFinite(price)) return;
@@ -620,21 +681,28 @@ export function PriceChart({ symbol, timeframe }: Props) {
   useEffect(() => {
     if (containerRef.current) {
       containerRef.current.style.cursor =
-        tool === "hline" || tool === "measure" || FIB_TOOLS[tool] ? "crosshair" : "";
+        tool === "hline" || tool === "measure" || tool === "trendLine" || FIB_TOOLS[tool]
+          ? "crosshair"
+          : "";
     }
     if (tool !== "measure") setMeasure(INITIAL_MEASURE);
     setFibDraft(null);
+    setTrendDraft(null);
+    if (tool !== "cursor") useChartStore.getState().selectFib(null);
   }, [tool]);
 
-  // Fib placement. Uses raw DOM events instead of chart.subscribeClick because
-  // the chart swallows a second click that comes quickly (double-click).
+  // Fib / trend line placement, selection and dragging. Uses raw DOM events instead of
+  // chart.subscribeClick because the chart swallows a second click that comes
+  // quickly (double-click).
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     let down: { x: number; y: number } | null = null;
+    /** This press started a trend line: releasing after a drag finishes it */
+    let trendStarted = false;
 
     /** Pointer position inside the main pane, or null if outside it */
-    const localPoint = (e: PointerEvent) => {
+    const localPoint = (e: MouseEvent) => {
       const chart = chartRef.current;
       if (!chart) return null;
       const rect = el.getBoundingClientRect();
@@ -645,18 +713,133 @@ export function PriceChart({ symbol, timeframe }: Props) {
       return { x, y };
     };
 
+    /** Topmost drawing under the pointer (anchors win over lines, trend lines over fibs) */
+    const hitTest = (p: { x: number; y: number }): FibHit | null => {
+      const entries = [...fibGeometryRef.current.entries()].reverse();
+      const trends = [...trendGeometryRef.current.entries()].reverse();
+      const anchorOf = (pts: { x: number; y: number }[]) =>
+        pts.findIndex((a) => Math.hypot(a.x - p.x, a.y - p.y) <= HIT_PX);
+      for (const [id, g] of trends) {
+        const anchor = anchorOf(g.points);
+        if (anchor >= 0) return { id, type: "trend", anchor, locked: g.locked };
+      }
+      for (const [id, g] of entries) {
+        const anchor = anchorOf(g.points);
+        if (anchor >= 0) return { id, type: "fib", anchor, locked: g.locked };
+      }
+      for (const [id, g] of trends) {
+        if (distToSegment(p, g.segment[0], g.segment[1]) <= HIT_PX) {
+          return { id, type: "trend", anchor: null, locked: g.locked };
+        }
+      }
+      for (const [id, g] of entries) {
+        const inX = p.x >= g.x1 - HIT_PX && p.x <= g.x2 + HIT_PX;
+        const onLevel = inX && g.levels.some((l) => Math.abs(l.y - p.y) <= HIT_PX);
+        const ys = g.levels.map((l) => l.y);
+        const onBackground =
+          g.background && ys.length > 1 && inX && p.y >= Math.min(...ys) && p.y <= Math.max(...ys);
+        const onTrend = g.points.some(
+          (a, i) => i > 0 && distToSegment(p, g.points[i - 1], a) <= HIT_PX,
+        );
+        if (onLevel || onBackground || onTrend) {
+          return { id, type: "fib", anchor: null, locked: g.locked };
+        }
+      }
+      return null;
+    };
+
     const onDown = (e: PointerEvent) => {
       down = { x: e.clientX, y: e.clientY };
+      trendStarted = false;
+      if (e.button !== 0) return;
+      if (toolRef.current === "trendLine") {
+        // First press starts the line; with a line already started, the release finishes it
+        const local = localPoint(e);
+        const p = local && pointAtRef.current(local.x, local.y);
+        if (!p || trendDraftRef.current) return;
+        trendStarted = true;
+        trendDraftRef.current = [p, p];
+        setTrendDraft([p, p]);
+        return;
+      }
+      if (toolRef.current !== "cursor") return;
+      const local = localPoint(e);
+      const hit = local && hitTest(local);
+      if (!hit) return;
+      const store = useChartStore.getState();
+      store.selectFib(hit.id);
+      const drawing =
+        hit.type === "trend"
+          ? store.trendLines.find((t) => t.id === hit.id)
+          : store.fibs.find((f) => f.id === hit.id);
+      const start = pointAtRef.current(local.x, local.y);
+      if (!drawing || hit.locked || !start) return;
+      fibDragRef.current = {
+        id: hit.id,
+        type: hit.type,
+        anchor: hit.anchor,
+        start,
+        orig: drawing.points,
+        moved: false,
+      };
+    };
+
+    // While dragging a drawing (or drawing a trend line) the chart must not
+    // pan: it listens to mousedown
+    const onMouseDown = (e: MouseEvent) => {
+      if (fibDragRef.current || (toolRef.current === "trendLine" && localPoint(e))) {
+        e.stopPropagation();
+      }
     };
 
     const onUp = (e: PointerEvent) => {
       const kind = FIB_TOOLS[toolRef.current];
       const start = down;
       down = null;
+
+      const drag = fibDragRef.current;
+      if (drag) {
+        fibDragRef.current = null;
+        if (drag.moved && drag.points) {
+          const store = useChartStore.getState();
+          if (drag.type === "trend") store.updateTrendLine(drag.id, { points: drag.points });
+          else store.updateFib(drag.id, { points: drag.points });
+        }
+        setFibDragPoints(null);
+        return;
+      }
+
+      if (toolRef.current === "trendLine") {
+        const started = trendStarted;
+        trendStarted = false;
+        const draft = trendDraftRef.current;
+        const local = localPoint(e);
+        const p = local && pointAtRef.current(local.x, local.y);
+        if (!draft || !p || !start || e.button !== 0) return;
+        // A plain click on the first point: wait for the second click
+        const dragged = Math.hypot(e.clientX - start.x, e.clientY - start.y) > 5;
+        if (started && !dragged) return;
+        if (p.time === draft[0].time && p.price === draft[0].price) return;
+        const store = useChartStore.getState();
+        store.addTrendLine([draft[0], p], symbolRef.current);
+        store.setTool("cursor");
+        trendDraftRef.current = null;
+        setTrendDraft(null);
+        return;
+      }
+
       // Ignore drags (panning the chart) and non-left buttons
-      if (!kind || !start || e.button !== 0) return;
+      if (!start || e.button !== 0) return;
       if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 5) return;
       const local = localPoint(e);
+
+      if (toolRef.current === "cursor") {
+        // Click on empty chart space deselects
+        if (!local || !hitTest(local)) useChartStore.getState().selectFib(null);
+        return;
+      }
+
+      if (!kind) return;
       const p = local && pointAtRef.current(local.x, local.y);
       if (!p) return;
       const draft = fibDraftRef.current;
@@ -676,8 +859,35 @@ export function PriceChart({ symbol, timeframe }: Props) {
     };
 
     const onMove = (e: PointerEvent) => {
-      if (!fibDraftRef.current) return;
       const local = localPoint(e);
+      const drag = fibDragRef.current;
+      if (drag) {
+        const p = local && pointAtRef.current(local.x, local.y);
+        if (!p) return;
+        const points =
+          drag.anchor === null
+            ? drag.orig.map((q) => ({
+                time: q.time + (p.time - drag.start.time),
+                price: q.price + (p.price - drag.start.price),
+              }))
+            : drag.orig.map((q, i) => (i === drag.anchor ? p : q));
+        drag.moved = true;
+        drag.points = points;
+        setFibDragPoints({ id: drag.id, points });
+        return;
+      }
+      if (toolRef.current === "cursor") {
+        const hit = local && hitTest(local);
+        el.style.cursor = !hit ? "" : hit.locked ? "pointer" : hit.anchor !== null ? "grab" : "move";
+        return;
+      }
+      if (toolRef.current === "trendLine") {
+        const p = local && pointAtRef.current(local.x, local.y);
+        if (!p || !trendDraftRef.current) return;
+        setTrendDraft((prev) => (prev ? [prev[0], p] : prev));
+        return;
+      }
+      if (!fibDraftRef.current) return;
       const p = local && pointAtRef.current(local.x, local.y);
       if (!p) return;
       setFibDraft((prev) =>
@@ -685,19 +895,64 @@ export function PriceChart({ symbol, timeframe }: Props) {
       );
     };
 
+    // Double-click on a drawing opens its settings
+    const onDblClick = (e: MouseEvent) => {
+      if (toolRef.current !== "cursor") return;
+      const local = localPoint(e);
+      const hit = local && hitTest(local);
+      if (!hit) return;
+      e.stopPropagation();
+      const store = useChartStore.getState();
+      store.selectFib(hit.id);
+      if (hit.type === "trend") store.setTrendSettingsTarget(hit.id);
+      else store.setFibSettingsTarget(hit.id);
+    };
+
+    // Right-click on a drawing selects it (shows its toolbar) instead of the browser menu
+    const onContextMenu = (e: MouseEvent) => {
+      const local = localPoint(e);
+      const hit = local && hitTest(local);
+      if (!hit) return;
+      e.preventDefault();
+      useChartStore.getState().selectFib(hit.id);
+    };
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setFibDraft(null);
+      const store = useChartStore.getState();
+      const dialogOpen = !!store.fibSettingsTarget || !!store.trendSettingsTarget;
+      if (e.key === "Escape") {
+        setFibDraft(null);
+        trendDraftRef.current = null;
+        setTrendDraft(null);
+        if (!dialogOpen) store.selectFib(null);
+        return;
+      }
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable=true]")) return;
+      if (store.selectedFibId && !dialogOpen) {
+        e.preventDefault();
+        // Ids are unique across both lists: only the owner removes anything
+        store.removeFib(store.selectedFibId);
+        store.removeTrendLine(store.selectedFibId);
+      }
     };
 
     // Capture phase: the chart's own handlers don't get a chance to stop them
     el.addEventListener("pointerdown", onDown, true);
+    el.addEventListener("mousedown", onMouseDown, true);
     el.addEventListener("pointerup", onUp, true);
     el.addEventListener("pointermove", onMove, true);
+    el.addEventListener("dblclick", onDblClick, true);
+    el.addEventListener("contextmenu", onContextMenu, true);
     window.addEventListener("keydown", onKey);
     return () => {
       el.removeEventListener("pointerdown", onDown, true);
+      el.removeEventListener("mousedown", onMouseDown, true);
       el.removeEventListener("pointerup", onUp, true);
       el.removeEventListener("pointermove", onMove, true);
+      el.removeEventListener("dblclick", onDblClick, true);
+      el.removeEventListener("contextmenu", onContextMenu, true);
       window.removeEventListener("keydown", onKey);
     };
   }, []);
@@ -946,15 +1201,31 @@ export function PriceChart({ symbol, timeframe }: Props) {
   }
   // Fibonacci drawings for this symbol + the one being placed
   const fibRender: React.ReactNode[] = [];
+  let fibToolbar: React.ReactNode = null;
+  const fibGeometry: typeof fibGeometryRef.current = new Map();
   if (chartRef.current && candleSeriesRef.current && paneOffsets[0]) {
     const series = candleSeriesRef.current;
     const areaWidth = chartRef.current.timeScale().width();
     const areaHeight = paneOffsets[0].height;
     const toDraw = fibs
       .filter((f) => f.symbol === symbol)
-      .map((f) => ({ key: f.id, kind: f.kind, points: f.points, isPreview: false }));
+      .map((f) => ({
+        key: f.id,
+        kind: f.kind,
+        points: fibDragPoints?.id === f.id ? fibDragPoints.points : f.points,
+        settings: fibSettingsOf(f),
+        locked: !!f.locked,
+        isPreview: false,
+      }));
     if (fibDraft) {
-      toDraw.push({ key: "draft", kind: fibDraft.kind, points: fibDraft.points, isPreview: true });
+      toDraw.push({
+        key: "draft",
+        kind: fibDraft.kind,
+        points: fibDraft.points,
+        settings: fibDefaults[fibDraft.kind] ?? defaultFibSettings(fibDraft.kind),
+        locked: false,
+        isPreview: true,
+      });
     }
     for (const f of toDraw) {
       const pts = f.points.flatMap((p) => {
@@ -967,22 +1238,138 @@ export function PriceChart({ symbol, timeframe }: Props) {
       const levels =
         f.kind === "extension" && f.points.length < 3
           ? []
-          : fibLevels(f.kind, f.points).flatMap((l) => {
+          : fibLevels(f.kind, f.points, f.settings).flatMap((l) => {
               const y = series.priceToCoordinate(l.price);
               return y === null ? [] : [{ ...l, y }];
             });
+      const geometry: FibGeometry = { points: pts, levels, ...fibSpan(pts, f.settings, areaWidth) };
+      const selected = f.key === selectedFibId;
+      if (!f.isPreview) {
+        fibGeometry.set(f.key, { ...geometry, locked: f.locked, background: f.settings.background });
+      }
       fibRender.push(
         <FibOverlay
           key={f.key}
-          points={pts}
-          levels={levels}
+          {...geometry}
+          settings={f.settings}
           isPreview={f.isPreview}
+          selected={selected}
           width={areaWidth}
           height={areaHeight}
         />,
       );
+      if (selected) {
+        const xs = pts.map((p) => p.x);
+        const top = Math.min(...pts.map((p) => p.y), ...levels.map((l) => l.y));
+        // Above the drawing; if that's off-screen (behind the header), below the anchors
+        const toolbarY =
+          top - 10 >= 90 ? top - 10 : Math.max(...pts.map((p) => p.y)) + 44;
+        const id = f.key;
+        const locked = f.locked;
+        fibToolbar = (
+          <FibToolbar
+            x={Math.max(80, Math.min(areaWidth - 80, (Math.min(...xs) + Math.max(...xs)) / 2))}
+            y={Math.max(40, Math.min(areaHeight - 4, toolbarY))}
+            locked={locked}
+            onSettings={() => useChartStore.getState().setFibSettingsTarget(id)}
+            onToggleLock={() => useChartStore.getState().updateFib(id, { locked: !locked })}
+            onClone={() => useChartStore.getState().cloneFib(id)}
+            onRemove={() => useChartStore.getState().removeFib(id)}
+          />
+        );
+      }
     }
   }
+  fibGeometryRef.current = fibGeometry;
+
+  // Trend lines for this symbol + the one being placed (drawn above fibs)
+  const trendRender: React.ReactNode[] = [];
+  const trendGeometry: typeof trendGeometryRef.current = new Map();
+  if (chartRef.current && candleSeriesRef.current && paneOffsets[0]) {
+    const series = candleSeriesRef.current;
+    const areaWidth = chartRef.current.timeScale().width();
+    const areaHeight = paneOffsets[0].height;
+    const toDraw = trendLines
+      .filter((t) => t.symbol === symbol)
+      .map((t) => ({
+        key: t.id,
+        points: fibDragPoints?.id === t.id ? fibDragPoints.points : t.points,
+        settings: trendLineSettingsOf(t.settings),
+        locked: !!t.locked,
+        isPreview: false,
+      }));
+    if (trendDraft) {
+      toDraw.push({
+        key: "trend-draft",
+        points: trendDraft,
+        settings: trendLineSettingsOf(trendLineDefaults ?? defaultTrendLineSettings()),
+        locked: false,
+        isPreview: true,
+      });
+    }
+    for (const t of toDraw) {
+      const pts = t.points.flatMap((p) => {
+        const x = timeToCoordinate(p.time);
+        const y = series.priceToCoordinate(p.price);
+        return x === null || y === null ? [] : [{ x, y }];
+      });
+      if (pts.length !== 2) continue;
+      const geometry: TrendGeometry = {
+        points: pts,
+        segment: trendSegment(pts[0], pts[1], t.settings, areaWidth, areaHeight),
+      };
+      if (!t.isPreview) trendGeometry.set(t.key, { ...geometry, locked: t.locked });
+
+      let stats: string[] | null = null;
+      if (t.settings.stats) {
+        const [a, b] = t.points;
+        const diff = b.price - a.price;
+        const pct = a.price === 0 ? 0 : (diff / a.price) * 100;
+        const bars = Math.round(Math.abs(b.time - a.time) / barSeconds(series.data()));
+        const angle = (Math.atan2(pts[0].y - pts[1].y, pts[1].x - pts[0].x) * 180) / Math.PI;
+        stats = [
+          `${diff >= 0 ? "+" : ""}${formatPrice(diff)} (${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)`,
+          `${bars} barras, ${durationLabel(a.time, b.time)}`,
+          `Ángulo ${angle.toFixed(1)}°`,
+        ];
+      }
+
+      const selected = t.key === selectedFibId;
+      trendRender.push(
+        <TrendLineOverlay
+          key={t.key}
+          {...geometry}
+          settings={t.settings}
+          prices={t.points.map((p) => p.price)}
+          stats={stats}
+          isPreview={t.isPreview}
+          selected={selected}
+          width={areaWidth}
+          height={areaHeight}
+        />,
+      );
+      if (selected) {
+        const ys = pts.map((p) => p.y);
+        const top = Math.min(...ys);
+        // Above the line; if that's off-screen (behind the header), below it
+        const toolbarY = top - 10 >= 90 ? top - 10 : Math.max(...ys) + 44;
+        const id = t.key;
+        const locked = t.locked;
+        fibToolbar = (
+          <FibToolbar
+            x={Math.max(80, Math.min(areaWidth - 80, (pts[0].x + pts[1].x) / 2))}
+            y={Math.max(40, Math.min(areaHeight - 4, toolbarY))}
+            locked={locked}
+            onSettings={() => useChartStore.getState().setTrendSettingsTarget(id)}
+            onToggleLock={() => useChartStore.getState().updateTrendLine(id, { locked: !locked })}
+            onClone={() => useChartStore.getState().cloneTrendLine(id)}
+            onRemove={() => useChartStore.getState().removeTrendLine(id)}
+          />
+        );
+      }
+    }
+  }
+  trendGeometryRef.current = trendGeometry;
   void renderTick;
 
   return (
@@ -990,6 +1377,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
       <div ref={containerRef} className="h-full w-full" />
       {measureRender}
       {fibRender}
+      {trendRender}
+      {fibToolbar}
 
       {/* Top-left of main pane: symbol info + OHLC + Volume pill + EMA pills */}
       <div

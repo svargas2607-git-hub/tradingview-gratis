@@ -6,6 +6,8 @@ import { RightSidebar } from "@/components/layout/RightSidebar";
 import { BottomPanel } from "@/components/layout/BottomPanel";
 import { PriceChart } from "@/components/chart/PriceChart";
 import { IndicatorSettingsDialog } from "@/components/chart/IndicatorSettingsDialog";
+import { FibSettingsDialog } from "@/components/chart/FibSettingsDialog";
+import { TrendLineSettingsDialog } from "@/components/chart/TrendLineSettingsDialog";
 import { useChartStore } from "@/lib/store/chart-store";
 
 export default function HomePage() {
@@ -26,6 +28,8 @@ export default function HomePage() {
       </div>
       <BottomPanel />
       <IndicatorSettingsDialog />
+      <FibSettingsDialog />
+      <TrendLineSettingsDialog />
     </div>
   );
 }

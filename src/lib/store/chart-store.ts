@@ -3,6 +3,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { Timeframe } from "@/lib/binance/types";
+import {
+  cloneFibSettings,
+  defaultFibSettings,
+  migrateOldFibSettings,
+  type FibSettings,
+} from "@/lib/fibonacci";
+import { defaultTrendLineSettings, type TrendLineSettings } from "@/lib/trendline";
 
 export type IndicatorKey =
   | "ema20"
@@ -16,6 +23,7 @@ export type DrawingTool =
   | "cursor"
   | "hline"
   | "measure"
+  | "trendLine"
   | "fibRetracement"
   | "fibExtension"
   | "eraser";
@@ -39,6 +47,19 @@ export interface FibDrawing {
   kind: FibKind;
   /** retracement: [A, B] · extension: [A, B, C] */
   points: FibPoint[];
+  /** Missing on drawings saved before settings existed → defaults */
+  settings?: FibSettings;
+  /** Locked drawings can be selected but not moved */
+  locked?: boolean;
+}
+
+export interface TrendLineDrawing {
+  id: string;
+  symbol: string;
+  /** [A, B] */
+  points: FibPoint[];
+  settings: TrendLineSettings;
+  locked?: boolean;
 }
 
 function newId() {
@@ -101,6 +122,12 @@ interface ChartState {
   watchlist: string[];
   /** Fibonacci drawings (persisted, filtered by symbol when rendering) */
   fibs: FibDrawing[];
+  /** Style new Fibonacci drawings start with ("Guardar como predeterminado") */
+  fibDefaults: Partial<Record<FibKind, FibSettings>>;
+  /** Trend lines (persisted, filtered by symbol when rendering) */
+  trendLines: TrendLineDrawing[];
+  /** Style new trend lines start with (null = TradingView defaults) */
+  trendLineDefaults: TrendLineSettings | null;
 
   // Ephemeral UI state (not persisted)
   tool: DrawingTool;
@@ -108,6 +135,12 @@ interface ChartState {
   symbolDialogOpen: boolean;
   /** Which indicator's settings dialog is open (null = closed) */
   settingsTarget: IndicatorKey | null;
+  /** Selected drawing: a fib or a trend line (ids never collide) */
+  selectedFibId: string | null;
+  /** Fib whose settings dialog is open (null = closed) */
+  fibSettingsTarget: string | null;
+  /** Trend line whose settings dialog is open (null = closed) */
+  trendSettingsTarget: string | null;
 
   // Actions
   setSymbol: (s: string) => void;
@@ -123,6 +156,19 @@ interface ChartState {
   clearPriceLines: (symbol?: string) => void;
   addFib: (kind: FibKind, points: FibPoint[], symbol: string) => void;
   clearFibs: (symbol?: string) => void;
+  updateFib: (id: string, patch: Partial<Omit<FibDrawing, "id">>) => void;
+  removeFib: (id: string) => void;
+  cloneFib: (id: string) => void;
+  selectFib: (id: string | null) => void;
+  setFibSettingsTarget: (id: string | null) => void;
+  setFibDefaults: (kind: FibKind, settings: FibSettings | null) => void;
+  addTrendLine: (points: FibPoint[], symbol: string) => void;
+  clearTrendLines: (symbol?: string) => void;
+  updateTrendLine: (id: string, patch: Partial<Omit<TrendLineDrawing, "id">>) => void;
+  removeTrendLine: (id: string) => void;
+  cloneTrendLine: (id: string) => void;
+  setTrendSettingsTarget: (id: string | null) => void;
+  setTrendLineDefaults: (settings: TrendLineSettings | null) => void;
   setSymbolDialogOpen: (v: boolean) => void;
   setSettingsTarget: (k: IndicatorKey | null) => void;
 }
@@ -151,10 +197,16 @@ export const useChartStore = create<ChartState>()(
       config: { ...DEFAULT_CONFIG },
       watchlist: DEFAULT_WATCHLIST,
       fibs: [],
+      fibDefaults: {},
+      trendLines: [],
+      trendLineDefaults: null,
       tool: "cursor",
       priceLines: [],
       symbolDialogOpen: false,
       settingsTarget: null,
+      selectedFibId: null,
+      fibSettingsTarget: null,
+      trendSettingsTarget: null,
 
       setSymbol: (symbol) => set({ symbol }),
       setTimeframe: (timeframe) => set({ timeframe }),
@@ -201,17 +253,136 @@ export const useChartStore = create<ChartState>()(
         })),
       addFib: (kind, points, symbol) =>
         set((state) => ({
-          fibs: [...state.fibs, { id: newId(), symbol, kind, points }],
+          fibs: [
+            ...state.fibs,
+            {
+              id: newId(),
+              symbol,
+              kind,
+              points,
+              settings: cloneFibSettings(state.fibDefaults[kind] ?? defaultFibSettings(kind)),
+            },
+          ],
         })),
       clearFibs: (symbol) =>
         set((state) => ({
           fibs: symbol ? state.fibs.filter((f) => f.symbol !== symbol) : [],
+          selectedFibId: null,
+          fibSettingsTarget: null,
         })),
+      updateFib: (id, patch) =>
+        set((state) => ({
+          fibs: state.fibs.map((f) => (f.id === id ? { ...f, ...patch } : f)),
+        })),
+      removeFib: (id) =>
+        set((state) => ({
+          fibs: state.fibs.filter((f) => f.id !== id),
+          selectedFibId: state.selectedFibId === id ? null : state.selectedFibId,
+          fibSettingsTarget: state.fibSettingsTarget === id ? null : state.fibSettingsTarget,
+        })),
+      cloneFib: (id) =>
+        set((state) => {
+          const src = state.fibs.find((f) => f.id === id);
+          if (!src) return {};
+          const copy: FibDrawing = {
+            ...src,
+            id: newId(),
+            points: src.points.map((p) => ({ ...p })),
+            settings: src.settings && cloneFibSettings(src.settings),
+            locked: false,
+          };
+          return { fibs: [...state.fibs, copy], selectedFibId: copy.id };
+        }),
+      selectFib: (selectedFibId) => set({ selectedFibId }),
+      setFibSettingsTarget: (fibSettingsTarget) => set({ fibSettingsTarget }),
+      setFibDefaults: (kind, settings) =>
+        set((state) => {
+          const fibDefaults = { ...state.fibDefaults };
+          if (settings) fibDefaults[kind] = cloneFibSettings(settings);
+          else delete fibDefaults[kind];
+          return { fibDefaults };
+        }),
+      addTrendLine: (points, symbol) =>
+        set((state) => ({
+          trendLines: [
+            ...state.trendLines,
+            {
+              id: newId(),
+              symbol,
+              points,
+              settings: { ...(state.trendLineDefaults ?? defaultTrendLineSettings()) },
+            },
+          ],
+        })),
+      clearTrendLines: (symbol) =>
+        set((state) => ({
+          trendLines: symbol ? state.trendLines.filter((t) => t.symbol !== symbol) : [],
+          selectedFibId: null,
+          trendSettingsTarget: null,
+        })),
+      updateTrendLine: (id, patch) =>
+        set((state) => ({
+          trendLines: state.trendLines.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+        })),
+      removeTrendLine: (id) =>
+        set((state) => ({
+          trendLines: state.trendLines.filter((t) => t.id !== id),
+          selectedFibId: state.selectedFibId === id ? null : state.selectedFibId,
+          trendSettingsTarget: state.trendSettingsTarget === id ? null : state.trendSettingsTarget,
+        })),
+      cloneTrendLine: (id) =>
+        set((state) => {
+          const src = state.trendLines.find((t) => t.id === id);
+          if (!src) return {};
+          const copy: TrendLineDrawing = {
+            ...src,
+            id: newId(),
+            points: src.points.map((p) => ({ ...p })),
+            settings: { ...src.settings },
+            locked: false,
+          };
+          return { trendLines: [...state.trendLines, copy], selectedFibId: copy.id };
+        }),
+      setTrendSettingsTarget: (trendSettingsTarget) => set({ trendSettingsTarget }),
+      setTrendLineDefaults: (settings) =>
+        set({ trendLineDefaults: settings && { ...settings } }),
       setSymbolDialogOpen: (symbolDialogOpen) => set({ symbolDialogOpen }),
       setSettingsTarget: (settingsTarget) => set({ settingsTarget }),
     }),
     {
       name: "tv-gratis-chart-state",
+      // v1: retracement defaults match TradingView's 24 levels
+      // v2: retracement uses the user's own setup (10% levels, see fibonacci.ts)
+      version: 2,
+      migrate: (persisted, version) => {
+        const s = persisted as Partial<ChartState>;
+        if (version < 2) {
+          // Existing retracements and any saved retracement default switch to it
+          s.fibs = s.fibs?.map((f) =>
+            f.kind === "retracement" ? { ...f, settings: defaultFibSettings("retracement") } : f,
+          );
+          if (s.fibDefaults?.retracement) {
+            const rest = { ...s.fibDefaults };
+            delete rest.retracement;
+            s.fibDefaults = rest;
+          }
+          return s as ChartState;
+        }
+        if (version < 1) {
+          s.fibs = s.fibs?.map((f) =>
+            f.kind === "retracement" && f.settings
+              ? { ...f, settings: migrateOldFibSettings(f.settings) }
+              : f,
+          );
+          if (s.fibDefaults?.retracement) {
+            s.fibDefaults = {
+              ...s.fibDefaults,
+              retracement: migrateOldFibSettings(s.fibDefaults.retracement),
+            };
+          }
+        }
+        return s as ChartState;
+      },
       partialize: (s) => ({
         symbol: s.symbol,
         timeframe: s.timeframe,
@@ -220,6 +391,9 @@ export const useChartStore = create<ChartState>()(
         config: s.config,
         watchlist: s.watchlist,
         fibs: s.fibs,
+        fibDefaults: s.fibDefaults,
+        trendLines: s.trendLines,
+        trendLineDefaults: s.trendLineDefaults,
       }),
     },
   ),
