@@ -443,9 +443,24 @@ export const useChartStore = create<ChartState>()(
       name: "tv-gratis-chart-state",
       // v1: retracement defaults match TradingView's 24 levels
       // v2: retracement uses the user's own setup (10% levels, see fibonacci.ts)
-      version: 2,
+      // v3: retracement 100% is the first click, 0% the second (not reversed)
+      version: 3,
       migrate: (persisted, version) => {
         const s = persisted as Partial<ChartState>;
+        if (version === 2) {
+          s.fibs = s.fibs?.map((f) =>
+            f.kind === "retracement" && f.settings
+              ? { ...f, settings: { ...f.settings, reverse: false } }
+              : f,
+          );
+          if (s.fibDefaults?.retracement) {
+            s.fibDefaults = {
+              ...s.fibDefaults,
+              retracement: { ...s.fibDefaults.retracement, reverse: false },
+            };
+          }
+          return s as ChartState;
+        }
         if (version < 2) {
           // Existing retracements and any saved retracement default switch to it
           s.fibs = s.fibs?.map((f) =>

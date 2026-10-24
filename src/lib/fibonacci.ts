@@ -118,12 +118,13 @@ export function defaultFibSettings(kind: FibKind): FibSettings {
     fontSize: 12,
   };
   if (kind === "extension") return base;
-  // Retracement as the user sets it up in TradingView: 0% at the first click,
-  // no background, percent labels on the right, above each line
+  // Retracement as the user sets it up in TradingView: 100% at the first
+  // click and 0% at the second, no background, percent labels on the right,
+  // above each line
   return {
     ...base,
     levels: RETRACEMENT_LEVELS.map((l) => ({ ...l })),
-    reverse: true,
+    reverse: false,
     background: false,
     levelsAsPercent: true,
     labelSide: "right",
