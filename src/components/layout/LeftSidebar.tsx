@@ -1,8 +1,14 @@
 "use client";
 
-import { MousePointer2, Minus, Ruler, Trash2, Lock } from "lucide-react";
+import { MousePointer2, Minus, Ruler, Trash2, Lock, Magnet, Check } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useChartStore, type DrawingTool } from "@/lib/store/chart-store";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { useChartStore, type DrawingTool, type MagnetMode } from "@/lib/store/chart-store";
 import { cn } from "@/lib/utils";
 
 interface ToolDef {
@@ -76,6 +82,85 @@ const TOOLS: ToolDef[] = [
   },
 ];
 
+// Strong magnet: same magnet with filled poles
+function StrongMagnetIcon({ className }: { className?: string }) {
+  return <Magnet className={className} fill="currentColor" fillOpacity={0.35} />;
+}
+
+const MAGNET_MODES: {
+  key: MagnetMode;
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  hint: string;
+}[] = [
+  { key: "weak", icon: Magnet, label: "Imán débil", hint: "Se pega al OHLC solo si estás cerca" },
+  { key: "strong", icon: StrongMagnetIcon, label: "Imán fuerte", hint: "Siempre se pega al OHLC más cercano" },
+];
+
+function MagnetButton() {
+  const magnet = useChartStore((s) => s.magnet);
+  const magnetMode = useChartStore((s) => s.magnetMode);
+  const setMagnet = useChartStore((s) => s.setMagnet);
+  const setMagnetMode = useChartStore((s) => s.setMagnetMode);
+  const current = MAGNET_MODES.find((m) => m.key === magnetMode) ?? MAGNET_MODES[0];
+  const Icon = current.icon;
+
+  return (
+    <div className="group relative">
+      <Tooltip>
+        <TooltipTrigger
+          onClick={() => setMagnet(!magnet)}
+          aria-label="Modo imán"
+          aria-pressed={magnet}
+          className={cn(
+            "flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-tv-panel-hover",
+            magnet ? "bg-tv-blue/15 text-tv-blue" : "text-tv-text-muted hover:text-tv-text",
+          )}
+        >
+          <Icon className="h-4 w-4" />
+        </TooltipTrigger>
+        <TooltipContent side="right" className="text-xs">
+          <div className="font-medium">
+            Modo imán · {current.label} {magnet ? "(activado)" : "(desactivado)"}
+          </div>
+          <div className="mt-0.5 text-[10px] text-tv-text-muted">
+            Los dibujos se pegan al OHLC de la vela · Mantener Ctrl lo invierte
+          </div>
+        </TooltipContent>
+      </Tooltip>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          aria-label="Elegir modo imán"
+          className="absolute -right-1 bottom-0 flex h-4 w-2.5 items-end justify-center text-tv-text-muted opacity-0 transition-opacity hover:text-tv-text group-hover:opacity-100 data-popup-open:opacity-100"
+        >
+          <svg viewBox="0 0 4 4" className="mb-0.5 h-1.5 w-1.5" fill="currentColor">
+            <path d="M4 0v4H0z" />
+          </svg>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="right" align="start" className="w-56 bg-tv-panel">
+          {MAGNET_MODES.map((m) => {
+            const ModeIcon = m.icon;
+            return (
+              <DropdownMenuItem
+                key={m.key}
+                onClick={() => setMagnetMode(m.key)}
+                className="flex items-center gap-2 text-xs"
+              >
+                <ModeIcon className="h-4 w-4" />
+                <div className="flex-1">
+                  <div>{m.label}</div>
+                  <div className="text-[10px] text-tv-text-muted">{m.hint}</div>
+                </div>
+                {magnet && magnetMode === m.key && <Check className="h-3.5 w-3.5 text-tv-blue" />}
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
 const LOCKED = [
   { label: "Texto" },
 ];
@@ -116,6 +201,10 @@ export function LeftSidebar() {
           </Tooltip>
         );
       })}
+
+      <div className="my-1 h-px w-6 bg-tv-border" />
+
+      <MagnetButton />
 
       <Tooltip>
         <TooltipTrigger

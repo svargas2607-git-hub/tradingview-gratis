@@ -28,6 +28,9 @@ export type DrawingTool =
   | "fibExtension"
   | "eraser";
 
+/** Weak snaps only near an O/H/L/C; strong always snaps to the closest one */
+export type MagnetMode = "weak" | "strong";
+
 export interface PriceLine {
   id: string;
   symbol: string;
@@ -128,6 +131,9 @@ interface ChartState {
   trendLines: TrendLineDrawing[];
   /** Style new trend lines start with (null = TradingView defaults) */
   trendLineDefaults: TrendLineSettings | null;
+  /** Magnet: drawing points snap to the OHLC of the bar under the cursor */
+  magnet: boolean;
+  magnetMode: MagnetMode;
 
   // Ephemeral UI state (not persisted)
   tool: DrawingTool;
@@ -169,6 +175,9 @@ interface ChartState {
   cloneTrendLine: (id: string) => void;
   setTrendSettingsTarget: (id: string | null) => void;
   setTrendLineDefaults: (settings: TrendLineSettings | null) => void;
+  setMagnet: (on: boolean) => void;
+  /** Picking a mode also turns the magnet on, like TradingView */
+  setMagnetMode: (mode: MagnetMode) => void;
   setSymbolDialogOpen: (v: boolean) => void;
   setSettingsTarget: (k: IndicatorKey | null) => void;
 }
@@ -200,6 +209,8 @@ export const useChartStore = create<ChartState>()(
       fibDefaults: {},
       trendLines: [],
       trendLineDefaults: null,
+      magnet: false,
+      magnetMode: "weak",
       tool: "cursor",
       priceLines: [],
       symbolDialogOpen: false,
@@ -346,6 +357,8 @@ export const useChartStore = create<ChartState>()(
       setTrendSettingsTarget: (trendSettingsTarget) => set({ trendSettingsTarget }),
       setTrendLineDefaults: (settings) =>
         set({ trendLineDefaults: settings && { ...settings } }),
+      setMagnet: (magnet) => set({ magnet }),
+      setMagnetMode: (magnetMode) => set({ magnetMode, magnet: true }),
       setSymbolDialogOpen: (symbolDialogOpen) => set({ symbolDialogOpen }),
       setSettingsTarget: (settingsTarget) => set({ settingsTarget }),
     }),
@@ -394,6 +407,8 @@ export const useChartStore = create<ChartState>()(
         fibDefaults: s.fibDefaults,
         trendLines: s.trendLines,
         trendLineDefaults: s.trendLineDefaults,
+        magnet: s.magnet,
+        magnetMode: s.magnetMode,
       }),
     },
   ),

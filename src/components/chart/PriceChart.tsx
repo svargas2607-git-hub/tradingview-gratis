@@ -74,6 +74,8 @@ interface FibHit {
 
 /** Hit tolerance in px for fib lines and anchors */
 const HIT_PX = 6;
+/** Weak magnet only snaps when an O/H/L/C is this close (px) */
+const MAGNET_WEAK_PX = 20;
 
 function distToSegment(
   p: { x: number; y: number },
@@ -218,6 +220,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
     new Map(),
   );
   const trendGeometryRef = useRef<Map<string, TrendGeometry & { locked: boolean }>>(new Map());
+  /** Ctrl held: inverts the magnet while pressed */
+  const ctrlHeldRef = useRef(false);
+  /** Where the magnet snapped the cursor (px), shown as a dot */
+  const [snapDot, setSnapDot] = useState<{ x: number; y: number } | null>(null);
+  const magnet = useChartStore((s) => s.magnet);
+  const magnetMode = useChartStore((s) => s.magnetMode);
 
   /** Seconds per bar, from the last two loaded candles */
   function barSeconds(data: readonly { time: unknown }[]): number {
@@ -275,14 +283,61 @@ export function PriceChart({ symbol, timeframe }: Props) {
     return chart.timeScale().logicalToCoordinate(logical as Logical);
   }
 
-  function pointAt(x: number, y: number): FibPoint | null {
-    const price = candleSeriesRef.current?.coordinateToPrice(y);
+  /** Magnet is on, inverted while Ctrl is held (as in TradingView) */
+  function magnetActive(): boolean {
+    return useChartStore.getState().magnet !== ctrlHeldRef.current;
+  }
+
+  /**
+   * Magnet: the O/H/L/C of the bar under the cursor closest to Y, or null when
+   * it doesn't snap (off, outside the loaded bars, or weak and too far).
+   */
+  function magnetSnap(x: number, y: number): number | null {
+    const chart = chartRef.current;
+    const series = candleSeriesRef.current;
+    if (!chart || !series || !magnetActive()) return null;
+    const data = series.data();
+    const logical = chart.timeScale().coordinateToLogical(x);
+    if (logical === null) return null;
+    const bar = data[Math.round(logical)];
+    if (!bar || !("open" in bar)) return null;
+    let best: number | null = null;
+    let bestDist = Infinity;
+    for (const v of [bar.open, bar.high, bar.low, bar.close]) {
+      const vy = series.priceToCoordinate(v);
+      if (vy === null) continue;
+      const d = Math.abs(vy - y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = v;
+      }
+    }
+    if (useChartStore.getState().magnetMode === "weak" && bestDist > MAGNET_WEAK_PX) return null;
+    return best;
+  }
+
+  /** Chart point under the pixel; `snap` applies the magnet */
+  function pointAt(x: number, y: number, snap = true): FibPoint | null {
+    const raw = candleSeriesRef.current?.coordinateToPrice(y);
     const time = coordinateToTime(x);
-    if (price === null || price === undefined || !isFinite(price) || time === null) return null;
-    return { time, price };
+    if (raw === null || raw === undefined || !isFinite(raw) || time === null) return null;
+    const snapped = snap ? magnetSnap(x, y) : null;
+    return { time, price: snapped ?? raw };
   }
   const pointAtRef = useRef(pointAt);
   pointAtRef.current = pointAt;
+
+  /** Moves the snap dot to where the magnet snaps `local` (null hides it) */
+  function updateSnapDot(local: { x: number; y: number } | null) {
+    const snapped = local && magnetSnap(local.x, local.y);
+    const y = snapped !== null && snapped !== undefined ? candleSeriesRef.current?.priceToCoordinate(snapped) : null;
+    const time = local && coordinateToTime(local.x);
+    const x = time !== null && time !== undefined ? timeToCoordinate(time) : null;
+    const next = x !== null && y !== null && y !== undefined ? { x, y } : null;
+    setSnapDot((prev) => (prev?.x === next?.x && prev?.y === next?.y ? prev : next));
+  }
+  const updateSnapDotRef = useRef(updateSnapDot);
+  updateSnapDotRef.current = updateSnapDot;
 
   // Helper — compute pane top offsets from chart layout
   function recomputePaneOffsets() {
@@ -372,8 +427,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
       // Fib and trend line tools use their own DOM listeners (see effect below)
       if (FIB_TOOLS[toolRef.current] || toolRef.current === "trendLine") return;
 
-      const price = candleSeriesRef.current.coordinateToPrice(param.point.y);
-      if (price === null || !isFinite(price)) return;
+      const p = pointAtRef.current(param.point.x, param.point.y);
+      if (!p) return;
+      const price = p.price;
 
       if (toolRef.current === "hline") {
         addPriceLineRef.current(price, symbolRef.current);
@@ -415,8 +471,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
         param.time &&
         candleSeriesRef.current
       ) {
-        const price = candleSeriesRef.current.coordinateToPrice(param.point.y);
-        if (price !== null && isFinite(price)) {
+        const price = pointAtRef.current(param.point.x, param.point.y)?.price;
+        if (price !== undefined) {
           const time = Number(param.time);
           setMeasure((prev) =>
             prev.phase === "placing" ? { ...prev, b: { time, price } } : prev,
@@ -689,7 +745,43 @@ export function PriceChart({ symbol, timeframe }: Props) {
     setFibDraft(null);
     setTrendDraft(null);
     if (tool !== "cursor") useChartStore.getState().selectFib(null);
+    setSnapDot(null);
   }, [tool]);
+
+  // Strong magnet: the crosshair also sticks to the OHLC while drawing.
+  // Weak keeps the free crosshair and only shows the snap dot.
+  const applyCrosshairModeRef = useRef(() => {});
+  applyCrosshairModeRef.current = () => {
+    const snaps =
+      toolRef.current !== "cursor" && magnetActive() && useChartStore.getState().magnetMode === "strong";
+    chartRef.current?.applyOptions({
+      crosshair: { mode: snaps ? CrosshairMode.MagnetOHLC : CrosshairMode.Normal },
+    });
+  };
+  useEffect(() => {
+    applyCrosshairModeRef.current();
+  }, [tool, magnet, magnetMode]);
+
+  // Holding Ctrl inverts the magnet
+  useEffect(() => {
+    const set = (held: boolean) => {
+      if (ctrlHeldRef.current === held) return;
+      ctrlHeldRef.current = held;
+      applyCrosshairModeRef.current();
+      if (!held || !magnetActive()) setSnapDot(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => e.key === "Control" && set(true);
+    const onKeyUp = (e: KeyboardEvent) => e.key === "Control" && set(false);
+    const onBlur = () => set(false);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
 
   // Fib / trend line placement, selection and dragging. Uses raw DOM events instead of
   // chart.subscribeClick because the chart swallows a second click that comes
@@ -772,7 +864,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
         hit.type === "trend"
           ? store.trendLines.find((t) => t.id === hit.id)
           : store.fibs.find((f) => f.id === hit.id);
-      const start = pointAtRef.current(local.x, local.y);
+      // Moving the whole drawing keeps its shape: only anchors snap
+      const start = pointAtRef.current(local.x, local.y, false);
       if (!drawing || hit.locked || !start) return;
       fibDragRef.current = {
         id: hit.id,
@@ -861,8 +954,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
     const onMove = (e: PointerEvent) => {
       const local = localPoint(e);
       const drag = fibDragRef.current;
+      const placing = toolRef.current !== "cursor" || (drag !== null && drag.anchor !== null);
+      updateSnapDotRef.current(placing ? local : null);
       if (drag) {
-        const p = local && pointAtRef.current(local.x, local.y);
+        const p = local && pointAtRef.current(local.x, local.y, drag.anchor !== null);
         if (!p) return;
         const points =
           drag.anchor === null
@@ -894,6 +989,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
         prev ? { ...prev, points: [...prev.points.slice(0, -1), p] } : prev,
       );
     };
+
+    const onLeave = () => updateSnapDotRef.current(null);
 
     // Double-click on a drawing opens its settings
     const onDblClick = (e: MouseEvent) => {
@@ -943,6 +1040,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
     el.addEventListener("mousedown", onMouseDown, true);
     el.addEventListener("pointerup", onUp, true);
     el.addEventListener("pointermove", onMove, true);
+    el.addEventListener("pointerleave", onLeave);
     el.addEventListener("dblclick", onDblClick, true);
     el.addEventListener("contextmenu", onContextMenu, true);
     window.addEventListener("keydown", onKey);
@@ -951,6 +1049,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       el.removeEventListener("mousedown", onMouseDown, true);
       el.removeEventListener("pointerup", onUp, true);
       el.removeEventListener("pointermove", onMove, true);
+      el.removeEventListener("pointerleave", onLeave);
       el.removeEventListener("dblclick", onDblClick, true);
       el.removeEventListener("contextmenu", onContextMenu, true);
       window.removeEventListener("keydown", onKey);
@@ -1378,6 +1477,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
       {measureRender}
       {fibRender}
       {trendRender}
+      {snapDot && (
+        <div
+          className="pointer-events-none absolute z-10 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-tv-blue bg-tv-bg"
+          style={{ left: snapDot.x, top: snapDot.y }}
+        />
+      )}
       {fibToolbar}
 
       {/* Top-left of main pane: symbol info + OHLC + Volume pill + EMA pills */}
