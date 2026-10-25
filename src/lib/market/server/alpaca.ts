@@ -2,6 +2,10 @@ import type { Candle, Ticker24h, Timeframe } from "@/lib/binance/types";
 import type { FoundSymbol } from "../provider";
 
 const DATA = "https://data.alpaca.markets/v2/stocks";
+const CRYPTO = "https://data.alpaca.markets/v1beta3/crypto/us";
+
+/** Crypto pairs carry a slash ("BTC/USD"); stock tickers never do */
+const isCrypto = (symbol: string) => symbol.includes("/");
 // Paper keys only work against the paper trading host; set ALPACA_TRADING_URL for a live account
 const TRADING = process.env.ALPACA_TRADING_URL ?? "https://paper-api.alpaca.markets";
 
@@ -61,13 +65,21 @@ export async function alpacaKlines(symbol: string, tf: Timeframe, limit: number)
     limit: String(limit),
     // Newest first so `limit` keeps the latest bars; reversed below
     sort: "desc",
-    feed: "iex",
-    adjustment: "raw",
   });
-  const data = await get<{ bars: AlpacaBar[] | null }>(
-    `${DATA}/${encodeURIComponent(symbol)}/bars?${params}`,
-  );
-  return (data.bars ?? [])
+  let bars: AlpacaBar[] | null;
+  if (isCrypto(symbol)) {
+    params.set("symbols", symbol);
+    const data = await get<{ bars: Record<string, AlpacaBar[]> | null }>(`${CRYPTO}/bars?${params}`);
+    bars = data.bars?.[symbol] ?? null;
+  } else {
+    params.set("feed", "iex");
+    params.set("adjustment", "raw");
+    const data = await get<{ bars: AlpacaBar[] | null }>(
+      `${DATA}/${encodeURIComponent(symbol)}/bars?${params}`,
+    );
+    bars = data.bars;
+  }
+  return (bars ?? [])
     .map((b) => ({
       time: Math.floor(Date.parse(b.t) / 1000),
       open: b.o,
@@ -87,9 +99,21 @@ interface Snapshot {
 }
 
 export async function alpacaTickers(symbols: string[]): Promise<Ticker24h[]> {
-  const params = new URLSearchParams({ symbols: symbols.join(","), feed: "iex" });
-  const snaps = await get<Record<string, Snapshot>>(`${DATA}/snapshots?${params}`);
-  return Object.entries(snaps).map(([symbol, s]) => {
+  const crypto = symbols.filter(isCrypto);
+  const stocks = symbols.filter((s) => !isCrypto(s));
+  const [stockSnaps, cryptoSnaps] = await Promise.all<Record<string, Snapshot>>([
+    stocks.length
+      ? get<Record<string, Snapshot>>(
+          `${DATA}/snapshots?${new URLSearchParams({ symbols: stocks.join(","), feed: "iex" })}`,
+        )
+      : {},
+    crypto.length
+      ? get<{ snapshots: Record<string, Snapshot> }>(
+          `${CRYPTO}/snapshots?${new URLSearchParams({ symbols: crypto.join(",") })}`,
+        ).then((r) => r.snapshots)
+      : {},
+  ]);
+  return Object.entries({ ...stockSnaps, ...cryptoSnaps }).map(([symbol, s]) => {
     const day = s.dailyBar;
     const last = s.latestTrade?.p ?? day?.c ?? 0;
     const prev = s.prevDailyBar?.c ?? day?.o ?? last;
@@ -117,8 +141,12 @@ let assetCache: { at: number; list: Asset[] } | null = null;
 
 async function assets(): Promise<Asset[]> {
   if (assetCache && Date.now() - assetCache.at < 6 * 3600_000) return assetCache.list;
-  const list = await get<Asset[]>(`${TRADING}/v2/assets?status=active&asset_class=us_equity`);
-  assetCache = { at: Date.now(), list: list.filter((a) => a.tradable) };
+  const [stocks, crypto] = await Promise.all(
+    ["us_equity", "crypto"].map((cls) =>
+      get<Asset[]>(`${TRADING}/v2/assets?status=active&asset_class=${cls}`),
+    ),
+  );
+  assetCache = { at: Date.now(), list: [...stocks, ...crypto].filter((a) => a.tradable) };
   return assetCache.list;
 }
 

@@ -69,7 +69,9 @@ export function BottomPanel() {
       )}
       <div className="ml-auto flex items-center gap-2 text-[10px] text-tv-text-dim">
         <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-tv-green" />
-        <span>{SOURCE_NOTE[source]}</span>
+        <span>
+          {source === "alpaca" && symbol.includes("/") ? "Alpaca · Cripto · cada 5 s" : SOURCE_NOTE[source]}
+        </span>
       </div>
     </div>
   );

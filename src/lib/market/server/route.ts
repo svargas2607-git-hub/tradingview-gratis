@@ -2,7 +2,8 @@ import type { NextRequest } from "next/server";
 import type { Timeframe } from "@/lib/binance/types";
 import { AlpacaConfigError } from "./alpaca";
 
-const TICKER = /^[A-Za-z0-9.\-]{1,12}$/;
+// "/" is for Alpaca crypto pairs like BTC/USD
+const TICKER = /^[A-Za-z0-9.\-/]{1,15}$/;
 const TIMEFRAMES = new Set<string>([
   "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M",
 ]);
