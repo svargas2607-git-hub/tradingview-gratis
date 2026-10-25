@@ -1,9 +1,9 @@
 export type MarketSource = "binance" | "alpaca" | "yahoo";
 
-export const SOURCES: { id: MarketSource; label: string; hint: string }[] = [
-  { id: "binance", label: "Cripto · Binance", hint: "BTC, ETH, SOL…" },
-  { id: "alpaca", label: "Acciones EE.UU. · Alpaca", hint: "AAPL, TSLA, SPY…" },
-  { id: "yahoo", label: "Acciones EE.UU. · Yahoo", hint: "AAPL, TSLA, SPY…" },
+export const SOURCES: { id: MarketSource; label: string; short: string; hint: string }[] = [
+  { id: "binance", label: "Cripto · Binance", short: "Binance", hint: "BTC, ETH, SOL…" },
+  { id: "alpaca", label: "Acciones EE.UU. y cripto · Alpaca", short: "Alpaca", hint: "AAPL, TSLA, BTC/USD…" },
+  { id: "yahoo", label: "Acciones EE.UU. y cripto · Yahoo", short: "Yahoo", hint: "AAPL, TSLA, BTC-USD…" },
 ];
 
 /**

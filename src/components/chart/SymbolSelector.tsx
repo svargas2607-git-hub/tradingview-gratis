@@ -67,7 +67,7 @@ export function SymbolSelector() {
         <span className="tabular-nums">{displayName(symbol)}</span>
         <ChevronDown className="h-3.5 w-3.5 text-tv-text-muted" />
       </DialogTrigger>
-      <DialogContent className="max-w-md gap-0 bg-tv-panel p-0">
+      <DialogContent className="max-w-md grid-cols-[minmax(0,1fr)] gap-0 overflow-hidden bg-tv-panel p-0">
         <DialogHeader className="border-b border-tv-border px-4 py-3">
           <DialogTitle className="text-sm font-medium">Buscar símbolo</DialogTitle>
         </DialogHeader>
@@ -75,6 +75,7 @@ export function SymbolSelector() {
           {SOURCES.map((s) => (
             <button
               key={s.id}
+              title={s.label}
               onClick={() => {
                 setSource(s.id);
                 setResults([]);
@@ -86,7 +87,7 @@ export function SymbolSelector() {
                   : "text-tv-text-muted hover:bg-tv-panel-hover hover:text-tv-text",
               )}
             >
-              {s.label}
+              {s.short}
             </button>
           ))}
         </div>
@@ -100,7 +101,7 @@ export function SymbolSelector() {
           />
         </div>
         <ScrollArea className="h-[400px]">
-          <div className="flex flex-col">
+          <div className="flex w-full min-w-0 flex-col">
             {error && <div className="p-4 text-center text-xs text-tv-red">{error}</div>}
             {!error && !loading && results.length === 0 && (
               <div className="p-4 text-center text-xs text-tv-text-muted">
@@ -119,16 +120,16 @@ export function SymbolSelector() {
                     setQuery("");
                   }}
                   className={cn(
-                    "flex items-center justify-between gap-3 border-b border-tv-border px-4 py-2 text-left text-xs hover:bg-tv-panel-hover",
+                    "flex w-full min-w-0 items-center justify-between gap-3 overflow-hidden border-b border-tv-border px-4 py-2 text-left text-xs hover:bg-tv-panel-hover",
                     full === symbol && "bg-tv-panel-hover",
                   )}
                 >
                   <div className="flex min-w-0 items-center gap-3">
-                    <span className="font-semibold text-tv-text">{s.base}</span>
+                    <span className="shrink-0 font-semibold text-tv-text">{s.base}</span>
                     <span className="truncate text-tv-text-muted">{s.detail}</span>
                   </div>
                   {source === "binance" && (
-                    <span className="text-tv-text-muted">{s.ticker}</span>
+                    <span className="shrink-0 text-tv-text-muted">{s.ticker}</span>
                   )}
                 </button>
               );
