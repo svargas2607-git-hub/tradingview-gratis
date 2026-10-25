@@ -31,6 +31,7 @@ const RANGES: Partial<Record<Timeframe, YahooRange>> = {
 
 interface ChartResult {
   meta: {
+    instrumentType?: string;
     regularMarketPrice?: number;
     chartPreviousClose?: number;
     previousClose?: number;
@@ -60,18 +61,43 @@ async function chart(symbol: string, interval: string, range: string): Promise<C
   return result;
 }
 
-function toCandles(r: ChartResult): Candle[] {
+/** Seconds per bar for minute intervals; their open bar can carry a live timestamp off the grid */
+const MINUTE_STEPS: Record<string, number> = { "1m": 60, "5m": 300, "15m": 900, "30m": 1800 };
+
+function toCandles(r: ChartResult, interval: string): Candle[] {
   const q = r.indicators.quote[0];
   const out: Candle[] = [];
-  (r.timestamp ?? []).forEach((t, i) => {
+  const step = MINUTE_STEPS[interval];
+  (r.timestamp ?? []).forEach((ts, i) => {
+    const t = step ? Math.floor(ts / step) * step : ts;
     const open = q.open[i];
     const high = q.high[i];
     const low = q.low[i];
     const close = q.close[i];
     // Yahoo leaves nulls for bars with no trades
     if (open == null || high == null || low == null || close == null) return;
+    // Two bars on the same slot: keep the newer one
+    if (out.length > 0 && out[out.length - 1].time === t) out.pop();
     out.push({ time: t, open, high, low, close, volume: q.volume[i] ?? 0, isFinal: true });
   });
+  return out;
+}
+
+/** Crypto never closes: group hourly bars into clock-aligned buckets (00, 04, 08 UTC…) */
+function groupAligned(bars: Candle[], size: number): Candle[] {
+  const out: Candle[] = [];
+  for (const b of bars) {
+    const bucket = Math.floor(b.time / (size * 3600)) * size * 3600;
+    const g = out[out.length - 1];
+    if (g && g.time === bucket) {
+      g.high = Math.max(g.high, b.high);
+      g.low = Math.min(g.low, b.low);
+      g.close = b.close;
+      g.volume += b.volume;
+    } else {
+      out.push({ ...b, time: bucket });
+    }
+  }
   return out;
 }
 
@@ -102,8 +128,13 @@ export async function yahooKlines(symbol: string, tf: Timeframe, limit: number):
   const cfg = RANGES[tf];
   if (!cfg) throw new Error(`Yahoo no soporta el timeframe ${tf}`);
   const r = await chart(symbol, cfg.interval, limit <= 5 ? cfg.recent : cfg.full);
-  let bars = toCandles(r);
-  if (cfg.groupBars) bars = groupBars(bars, cfg.groupBars);
+  let bars = toCandles(r, cfg.interval);
+  if (cfg.groupBars) {
+    bars =
+      r.meta.instrumentType === "CRYPTOCURRENCY"
+        ? groupAligned(bars, cfg.groupBars)
+        : groupBars(bars, cfg.groupBars);
+  }
   return bars.slice(-limit);
 }
 
@@ -133,7 +164,9 @@ export async function yahooSearch(q: string): Promise<FoundSymbol[]> {
   return (json.quotes ?? [])
     .filter(
       (x: { quoteType?: string; symbol?: string }) =>
-        (x.quoteType === "EQUITY" || x.quoteType === "ETF") && x.symbol && !x.symbol.includes("."),
+        (x.quoteType === "EQUITY" || x.quoteType === "ETF" || x.quoteType === "CRYPTOCURRENCY") &&
+        x.symbol &&
+        !x.symbol.includes("."),
     )
     .map((x: { symbol: string; shortname?: string; longname?: string }) => ({
       ticker: x.symbol,
