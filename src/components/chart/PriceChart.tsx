@@ -209,8 +209,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
   const ema50Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const ema200Ref = useRef<ISeriesApi<"Line"> | null>(null);
   const rsiRef = useRef<ISeriesApi<"Line"> | null>(null);
-  const rsi30Ref = useRef<ISeriesApi<"Line"> | null>(null);
-  const rsi70Ref = useRef<ISeriesApi<"Line"> | null>(null);
+  const rsiLinesRef = useRef<IPriceLine[]>([]);
   const macdRef = useRef<ISeriesApi<"Line"> | null>(null);
   const macdSignalRef = useRef<ISeriesApi<"Line"> | null>(null);
   const macdHistRef = useRef<ISeriesApi<"Histogram"> | null>(null);
@@ -699,8 +698,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       ema200Ref.current = null;
       vwapLabelRefs.current = [];
       rsiRef.current = null;
-      rsi30Ref.current = null;
-      rsi70Ref.current = null;
+      rsiLinesRef.current = [];
       macdRef.current = null;
       macdSignalRef.current = null;
       macdHistRef.current = null;
@@ -745,38 +743,18 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       const r = chartRef.current.addSeries(
         LineSeries,
         {
-          color: INDICATOR_COLORS.rsi,
+          color: configRef.current.rsiColor ?? INDICATOR_COLORS.rsi,
           lineWidth: 1,
           priceLineVisible: false,
-          lastValueVisible: false,
-        },
-        paneIndex,
-      );
-      const r30 = chartRef.current.addSeries(
-        LineSeries,
-        {
-          color: TV_COLORS.textMuted,
-          lineWidth: 1,
-          lineStyle: 2,
-          priceLineVisible: false,
-          lastValueVisible: false,
-        },
-        paneIndex,
-      );
-      const r70 = chartRef.current.addSeries(
-        LineSeries,
-        {
-          color: TV_COLORS.textMuted,
-          lineWidth: 1,
-          lineStyle: 2,
-          priceLineVisible: false,
-          lastValueVisible: false,
+          lastValueVisible: true,
+          // Fixed 0-100 scale so the pane does not rescale with the data
+          autoscaleInfoProvider: () => ({
+            priceRange: { minValue: 0, maxValue: 100 },
+          }),
         },
         paneIndex,
       );
       rsiRef.current = r;
-      rsi30Ref.current = r30;
-      rsi70Ref.current = r70;
       try {
         chartRef.current.panes()[1]?.setStretchFactor(1);
         chartRef.current.panes()[0]?.setStretchFactor(3);
@@ -784,11 +762,8 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       updateRSI();
     } else if (!indicators.rsi && rsiRef.current && chartRef.current) {
       chartRef.current.removeSeries(rsiRef.current);
-      if (rsi30Ref.current) chartRef.current.removeSeries(rsi30Ref.current);
-      if (rsi70Ref.current) chartRef.current.removeSeries(rsi70Ref.current);
       rsiRef.current = null;
-      rsi30Ref.current = null;
-      rsi70Ref.current = null;
+      rsiLinesRef.current = [];
     }
     requestAnimationFrame(() => recomputePaneOffsets());
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -851,8 +826,6 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
     ema50Ref.current?.applyOptions({ visible: v("ema50") });
     ema200Ref.current?.applyOptions({ visible: v("ema200") });
     if (rsiRef.current) rsiRef.current.applyOptions({ visible: v("rsi") });
-    if (rsi30Ref.current) rsi30Ref.current.applyOptions({ visible: v("rsi") });
-    if (rsi70Ref.current) rsi70Ref.current.applyOptions({ visible: v("rsi") });
     if (macdRef.current) macdRef.current.applyOptions({ visible: v("macd") });
     if (macdSignalRef.current) macdSignalRef.current.applyOptions({ visible: v("macd") });
     if (macdHistRef.current) macdHistRef.current.applyOptions({ visible: v("macd") });
@@ -874,7 +847,13 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
 
   useEffect(() => {
     updateRSI();
-  }, [config.rsi]);
+  }, [config.rsi, config.rsiUpper, config.rsiLower]);
+
+  useEffect(() => {
+    rsiRef.current?.applyOptions({
+      color: config.rsiColor ?? INDICATOR_COLORS.rsi,
+    });
+  }, [config.rsiColor]);
 
   useEffect(() => {
     updateMACD();
@@ -1435,16 +1414,17 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       value: p.value,
     }));
     rsiRef.current.setData(data);
-    if (rsi30Ref.current && data.length > 0)
-      rsi30Ref.current.setData([
-        { time: data[0].time, value: 30 },
-        { time: data[data.length - 1].time, value: 30 },
-      ]);
-    if (rsi70Ref.current && data.length > 0)
-      rsi70Ref.current.setData([
-        { time: data[0].time, value: 70 },
-        { time: data[data.length - 1].time, value: 70 },
-      ]);
+    for (const l of rsiLinesRef.current) rsiRef.current.removePriceLine(l);
+    rsiLinesRef.current = [cfg.rsiLower ?? 30, cfg.rsiUpper ?? 70].map((price) =>
+      rsiRef.current!.createPriceLine({
+        price,
+        color: TV_COLORS.textMuted,
+        lineWidth: 1,
+        lineStyle: 2,
+        axisLabelVisible: true,
+        title: "",
+      }),
+    );
     setLastValues((prev) => ({ ...prev, rsi: data.at(-1)?.value }));
   }
 
@@ -2307,7 +2287,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
           <IndicatorPill
             name={`RSI ${config.rsi}`}
             value={lastValues.rsi !== undefined ? lastValues.rsi.toFixed(2) : undefined}
-            color={INDICATOR_COLORS.rsi}
+            color={config.rsiColor ?? INDICATOR_COLORS.rsi}
             hidden={hidden.rsi}
             onToggleHide={() => toggleHidden("rsi")}
             onSettings={() => setSettingsTarget("rsi")}

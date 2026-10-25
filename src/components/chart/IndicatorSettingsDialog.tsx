@@ -81,6 +81,9 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
     ema50: config.ema50,
     ema200: config.ema200,
     rsi: config.rsi,
+    rsiColor: config.rsiColor ?? DEFAULT_CONFIG.rsiColor,
+    rsiUpper: config.rsiUpper ?? DEFAULT_CONFIG.rsiUpper,
+    rsiLower: config.rsiLower ?? DEFAULT_CONFIG.rsiLower,
     macdFast: config.macdFast,
     macdSlow: config.macdSlow,
     macdSignal: config.macdSignal,
@@ -92,6 +95,9 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
       ema50: config.ema50,
       ema200: config.ema200,
       rsi: config.rsi,
+      rsiColor: config.rsiColor ?? DEFAULT_CONFIG.rsiColor,
+      rsiUpper: config.rsiUpper ?? DEFAULT_CONFIG.rsiUpper,
+      rsiLower: config.rsiLower ?? DEFAULT_CONFIG.rsiLower,
       macdFast: config.macdFast,
       macdSlow: config.macdSlow,
       macdSignal: config.macdSignal,
@@ -102,7 +108,16 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
     if (target === "ema20") onSave({ ema20: clamp(draft.ema20, 2, 500) });
     else if (target === "ema50") onSave({ ema50: clamp(draft.ema50, 2, 500) });
     else if (target === "ema200") onSave({ ema200: clamp(draft.ema200, 2, 500) });
-    else if (target === "rsi") onSave({ rsi: clamp(draft.rsi, 2, 100) });
+    else if (target === "rsi") {
+      const lower = clamp(draft.rsiLower, 1, 98);
+      const upper = clamp(draft.rsiUpper, lower + 1, 99);
+      onSave({
+        rsi: clamp(draft.rsi, 2, 100),
+        rsiColor: draft.rsiColor,
+        rsiUpper: upper,
+        rsiLower: lower,
+      });
+    }
     else if (target === "macd")
       onSave({
         macdFast: clamp(draft.macdFast, 2, 100),
@@ -122,11 +137,36 @@ function SettingsForm({ target, config, onSave, onReset }: FormProps) {
         />
       )}
       {target === "rsi" && (
-        <Field
-          label="Período"
-          value={draft.rsi}
-          onChange={(n) => setDraft((d) => ({ ...d, rsi: n }))}
-        />
+        <>
+          <Field
+            label="Período"
+            value={draft.rsi}
+            onChange={(n) => setDraft((d) => ({ ...d, rsi: n }))}
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <Field
+              label="Sobrecompra"
+              value={draft.rsiUpper}
+              onChange={(n) => setDraft((d) => ({ ...d, rsiUpper: n }))}
+            />
+            <Field
+              label="Sobreventa"
+              value={draft.rsiLower}
+              onChange={(n) => setDraft((d) => ({ ...d, rsiLower: n }))}
+            />
+          </div>
+          <label className="flex items-center justify-between">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-tv-text-muted">
+              Color de línea
+            </span>
+            <input
+              type="color"
+              value={draft.rsiColor}
+              onChange={(e) => setDraft((d) => ({ ...d, rsiColor: e.target.value }))}
+              className="h-7 w-10 cursor-pointer rounded border border-tv-border bg-transparent"
+            />
+          </label>
+        </>
       )}
       {target === "macd" && (
         <div className="grid grid-cols-3 gap-2">
