@@ -232,6 +232,9 @@ interface ChartState {
   tool: DrawingTool;
   priceLines: PriceLine[];
   symbolDialogOpen: boolean;
+  /** Indicator pills collapsed (shared by all charts so it survives layout changes) */
+  pillsCollapsed: boolean;
+  togglePillsCollapsed: () => void;
   /** Which indicator's settings dialog is open (null = closed) */
   settingsTarget: IndicatorKey | null;
   /** Selected drawing: a fib, trend line, position, Elliott wave or rectangle (ids never collide) */
@@ -362,6 +365,8 @@ export const useChartStore = create<ChartState>()(
       tool: "cursor",
       priceLines: [],
       symbolDialogOpen: false,
+      pillsCollapsed: false,
+      togglePillsCollapsed: () => set((s) => ({ pillsCollapsed: !s.pillsCollapsed })),
       settingsTarget: null,
       selectedFibId: null,
       fibSettingsTarget: null,

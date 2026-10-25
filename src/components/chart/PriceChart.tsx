@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import {
   createChart,
   CandlestickSeries,
@@ -252,6 +253,9 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
   const [lastPrice, setLastPrice] = useState<{ value: number; pct: number } | null>(null);
   const [lastValues, setLastValues] = useState<LastValues>({});
   const [paneOffsets, setPaneOffsets] = useState<PaneOffset[]>([]);
+  // Collapses every indicator pill so they stop covering the chart
+  const pillsCollapsed = useChartStore((s) => s.pillsCollapsed);
+  const togglePillsCollapsed = useChartStore((s) => s.togglePillsCollapsed);
   const [measure, setMeasure] = useState<MeasureState>(INITIAL_MEASURE);
   const [renderTick, setRenderTick] = useState(0);
   const measureRef = useRef(measure);
@@ -2209,7 +2213,24 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
 
         {/* Indicator pills for the main pane (fixed position below price) */}
         <div className="mt-1 flex flex-col items-start gap-1">
-          {indicators.ema20 && (
+          {Object.values(indicators).some(Boolean) && (
+            <button
+              onClick={togglePillsCollapsed}
+              title={pillsCollapsed ? "Mostrar indicadores" : "Comprimir indicadores"}
+              aria-label={pillsCollapsed ? "Mostrar indicadores" : "Comprimir indicadores"}
+              className="pointer-events-auto flex items-center gap-1 rounded bg-tv-panel/95 px-1.5 py-0.5 text-[11px] text-tv-text-muted shadow-sm ring-1 ring-tv-border backdrop-blur transition-colors hover:bg-tv-panel-hover hover:text-tv-text"
+            >
+              {pillsCollapsed ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronUp className="h-3 w-3" />
+              )}
+              <span>
+                Indicadores ({Object.values(indicators).filter(Boolean).length})
+              </span>
+            </button>
+          )}
+          {!pillsCollapsed && indicators.ema20 && (
             <IndicatorPill
               name={`EMA ${config.ema20}`}
               value={lastValues.ema20 !== undefined ? formatPrice(lastValues.ema20) : undefined}
@@ -2220,7 +2241,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
               onRemove={() => removeIndicator("ema20")}
             />
           )}
-          {indicators.ema50 && (
+          {!pillsCollapsed && indicators.ema50 && (
             <IndicatorPill
               name={`EMA ${config.ema50}`}
               value={lastValues.ema50 !== undefined ? formatPrice(lastValues.ema50) : undefined}
@@ -2231,7 +2252,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
               onRemove={() => removeIndicator("ema50")}
             />
           )}
-          {indicators.ema200 && (
+          {!pillsCollapsed && indicators.ema200 && (
             <IndicatorPill
               name={`EMA ${config.ema200}`}
               value={lastValues.ema200 !== undefined ? formatPrice(lastValues.ema200) : undefined}
@@ -2242,7 +2263,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
               onRemove={() => removeIndicator("ema200")}
             />
           )}
-          {indicators.volume && (
+          {!pillsCollapsed && indicators.volume && (
             <IndicatorPill
               name="Vol"
               value={lastValues.volume !== undefined ? formatVolume(lastValues.volume) : undefined}
@@ -2253,7 +2274,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
               onRemove={() => removeIndicator("volume")}
             />
           )}
-          {indicators.vpvr && (
+          {!pillsCollapsed && indicators.vpvr && (
             <IndicatorPill
               name={`VPVR ${vpvrSettingsRaw.rows} ${vpvrSettingsRaw.valueAreaPct}`}
               value={vpvrPoc !== undefined ? formatPrice(vpvrPoc) : undefined}
@@ -2264,7 +2285,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
               onRemove={() => removeIndicator("vpvr")}
             />
           )}
-          {indicators.vwap && (
+          {!pillsCollapsed && indicators.vwap && (
             <IndicatorPill
               name={`VWAP ${VWAP_ANCHORS.find((a) => a.value === vwapSettingsRaw.anchor)?.label ?? ""} ${vwapSettingsRaw.source}`}
               value={vwapSettingsRaw.valuesInLabel && vwapLast !== undefined ? formatPrice(vwapLast) : undefined}
@@ -2279,7 +2300,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       </div>
 
       {/* RSI pane label */}
-      {indicators.rsi && paneOffsets[rsiPaneIdx] && (
+      {!pillsCollapsed && indicators.rsi && paneOffsets[rsiPaneIdx] && (
         <div
           style={{ top: paneOffsets[rsiPaneIdx].top + 6, left: 12 }}
           className="pointer-events-none absolute z-10"
@@ -2297,7 +2318,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       )}
 
       {/* MACD pane label */}
-      {indicators.macd && paneOffsets[macdPaneIdx] && (
+      {!pillsCollapsed && indicators.macd && paneOffsets[macdPaneIdx] && (
         <div
           style={{ top: paneOffsets[macdPaneIdx].top + 6, left: 12 }}
           className="pointer-events-none absolute z-10"
