@@ -32,6 +32,20 @@ export interface RectangleSettings {
   textVAlign: RectangleVAlign;
 }
 
+/** Quick colors in the settings dialog (TradingView palette) */
+export const RECTANGLE_PRESET_COLORS: { color: string; label: string }[] = [
+  { color: "#2962ff", label: "Azul" },
+  { color: "#ffeb3b", label: "Amarillo" },
+  { color: "#f23645", label: "Rojo" },
+  { color: "#089981", label: "Verde" },
+  { color: "#ff9800", label: "Naranja" },
+  { color: "#9c27b0", label: "Violeta" },
+  { color: "#00bcd4", label: "Celeste" },
+  { color: "#e91e63", label: "Rosa" },
+  { color: "#787b86", label: "Gris" },
+  { color: "#ffffff", label: "Blanco" },
+];
+
 // TradingView defaults: blue border and translucent blue background
 export function defaultRectangleSettings(): RectangleSettings {
   return {

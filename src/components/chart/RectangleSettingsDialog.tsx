@@ -9,8 +9,10 @@ import {
 } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { useChartStore, type RectangleDrawing } from "@/lib/store/chart-store";
 import {
+  RECTANGLE_PRESET_COLORS,
   defaultRectangleSettings,
   rectangleSettingsOf,
   type RectangleHAlign,
@@ -98,6 +100,33 @@ function SettingsBody({ rect, onClose }: { rect: RectangleDrawing; onClose: () =
         </TabsList>
 
         <TabsContent value="style" className="flex flex-col gap-4 pt-2">
+          <Row label="Color">
+            <div className="flex flex-wrap gap-1.5">
+              {RECTANGLE_PRESET_COLORS.map(({ color, label }) => (
+                <button
+                  key={color}
+                  type="button"
+                  title={label}
+                  aria-label={label}
+                  // One click recolors border, background, middle line and text
+                  onClick={() =>
+                    set({
+                      borderColor: color,
+                      backgroundColor: color,
+                      middleColor: color,
+                      textColor: color,
+                    })
+                  }
+                  style={{ backgroundColor: color }}
+                  className={cn(
+                    "h-5 w-5 rounded-sm border border-tv-border",
+                    settings.borderColor === color && "ring-2 ring-tv-blue ring-offset-1 ring-offset-tv-panel",
+                  )}
+                />
+              ))}
+            </div>
+          </Row>
+
           <Row label="Borde">
             <Check checked={settings.border} onChange={(border) => set({ border })} />
             <ColorInput value={settings.borderColor} onChange={(borderColor) => set({ borderColor })} />
