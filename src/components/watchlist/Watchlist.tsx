@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Plus, X } from "lucide-react";
-import { fetchTickers24h } from "@/lib/binance/rest";
-import { getBinanceWS } from "@/lib/binance/ws";
+import { fetchTickers24h, subscribeTickers, symbolLabel } from "@/lib/market";
 import { useChartStore } from "@/lib/store/chart-store";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { formatPrice, formatPct } from "@/lib/format";
@@ -43,8 +42,7 @@ export function Watchlist() {
       })
       .catch(console.error);
 
-    const ws = getBinanceWS();
-    const unsub = ws.subscribeMiniTickers(watchlist, (tick) => {
+    const unsub = subscribeTickers(watchlist, (tick) => {
       setRows((prev) => {
         const prevRow = prev[tick.symbol];
         if (prevRow) {
@@ -107,6 +105,7 @@ export function Watchlist() {
             const row = rows[s];
             const isActive = s === symbol;
             const f = flash[s];
+            const label = symbolLabel(s);
             return (
               <div
                 key={s}
@@ -118,10 +117,8 @@ export function Watchlist() {
                 )}
               >
                 <div className="flex items-center gap-2">
-                  <span className="font-medium text-tv-text">
-                    {s.replace("USDT", "")}
-                  </span>
-                  <span className="text-[10px] text-tv-text-dim">USDT</span>
+                  <span className="font-medium text-tv-text">{label.base}</span>
+                  <span className="text-[10px] text-tv-text-dim">{label.quote}</span>
                 </div>
                 <span
                   className={cn(

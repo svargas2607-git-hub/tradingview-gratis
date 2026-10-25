@@ -2,14 +2,22 @@
 
 import { useEffect, useState } from "react";
 import { useChartStore } from "@/lib/store/chart-store";
-import { fetchTicker24h } from "@/lib/binance/rest";
+import { fetchTicker24h, symbolLabel } from "@/lib/market";
 import type { Ticker24h } from "@/lib/binance/types";
 import { formatPrice, formatPct, formatVolume } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
+const SOURCE_NOTE = {
+  binance: "Binance · Live",
+  alpaca: "Alpaca · IEX · cada 5 s",
+  yahoo: "Yahoo · cada 10 s",
+} as const;
+
 export function BottomPanel() {
   const symbol = useChartStore((s) => s.symbol);
   const [t, setT] = useState<Ticker24h | null>(null);
+  const { source, base, quote } = symbolLabel(symbol);
+  const isCrypto = source === "binance";
 
   useEffect(() => {
     let cancelled = false;
@@ -33,7 +41,7 @@ export function BottomPanel() {
 
   return (
     <div className="flex h-9 items-center gap-0 border-t border-tv-border bg-tv-panel px-3 text-xs">
-      <Stat label="Símbolo" value={symbol} />
+      <Stat label="Símbolo" value={isCrypto ? `${base}${quote}` : base} />
       <Stat
         label="24h Cambio"
         value={t ? formatPct(t.priceChangePercent) : "—"}
@@ -50,16 +58,18 @@ export function BottomPanel() {
         valueClass="text-tv-red"
       />
       <Stat
-        label="24h Vol (base)"
+        label={isCrypto ? "24h Vol (base)" : "Vol del día"}
         value={t ? formatVolume(t.volume) : "—"}
       />
-      <Stat
-        label="24h Vol (USDT)"
-        value={t ? formatVolume(t.quoteVolume) : "—"}
-      />
+      {isCrypto && (
+        <Stat
+          label="24h Vol (USDT)"
+          value={t ? formatVolume(t.quoteVolume) : "—"}
+        />
+      )}
       <div className="ml-auto flex items-center gap-2 text-[10px] text-tv-text-dim">
         <span className="inline-flex h-1.5 w-1.5 animate-pulse rounded-full bg-tv-green" />
-        <span>Binance · Live</span>
+        <span>{SOURCE_NOTE[source]}</span>
       </div>
     </div>
   );
