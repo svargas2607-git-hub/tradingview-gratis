@@ -55,6 +55,9 @@ import { ElliottOverlay, type ElliottGeometry } from "./ElliottOverlay";
 import { defaultRectangleSettings, rectangleBox, rectangleSettingsOf } from "@/lib/rectangle";
 import { RectangleOverlay, type RectangleGeometry } from "./RectangleOverlay";
 
+import { computeVpvr, vpvrSettingsOf } from "@/lib/vpvr";
+import { VpvrOverlay, type VpvrGeometry } from "./VpvrOverlay";
+
 const ELLIOTT_TOOLS: Partial<Record<DrawingTool, ElliottKind>> = {
   elliottImpulse: "impulse",
   elliottCorrection: "correction",
@@ -222,6 +225,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
   const elliotts = useChartStore((s) => s.elliotts);
   const rectangles = useChartStore((s) => s.rectangles);
   const rectangleDefaults = useChartStore((s) => s.rectangleDefaults);
+  const vpvrSettingsRaw = useChartStore((s) => s.vpvrSettings);
   const addPriceLine = useChartStore((s) => s.addPriceLine);
   const removeIndicator = useChartStore((s) => s.removeIndicator);
   const toggleHidden = useChartStore((s) => s.toggleHidden);
@@ -1970,6 +1974,73 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
     }
   }
   rectGeometryRef.current = rectGeometry;
+
+  // Volume profile of the bars on screen (VPVR), drawn behind the drawings
+  let vpvrRender: React.ReactNode = null;
+  let vpvrPoc: number | undefined;
+  if (indicators.vpvr && !hidden.vpvr && chartRef.current && candleSeriesRef.current && paneOffsets[0]) {
+    const chart = chartRef.current;
+    const series = candleSeriesRef.current;
+    const logical = chart.timeScale().getVisibleLogicalRange();
+    const data = series.data();
+    const settings = vpvrSettingsOf(vpvrSettingsRaw);
+    if (logical && data.length > 0) {
+      const i0 = Math.max(0, Math.ceil(logical.from));
+      const i1 = Math.min(data.length - 1, Math.floor(logical.to));
+      if (i1 >= i0) {
+        const t0 = Number(data[i0].time);
+        const t1 = Number(data[i1].time);
+        const visible = candlesRef.current.filter((c) => c.time >= t0 && c.time <= t1);
+        const profile = computeVpvr(visible, settings);
+        if (profile) {
+          const y = (price: number) => series.priceToCoordinate(price);
+          const rows = profile.rows.flatMap((r) => {
+            const y1 = y(r.high);
+            const y2 = y(r.low);
+            return y1 === null || y2 === null
+              ? []
+              : [{ y1, y2, up: r.up, down: r.down, total: r.total, inValueArea: r.inValueArea }];
+          });
+          const poc = profile.rows[profile.pocIndex];
+          const pocPrice = (poc.low + poc.high) / 2;
+          const vahPrice = profile.rows[profile.vaHighIndex].high;
+          const valPrice = profile.rows[profile.vaLowIndex].low;
+          const pocY = y(pocPrice);
+          const vahY = y(vahPrice);
+          const valY = y(valPrice);
+          vpvrPoc = pocPrice;
+          if (rows.length === profile.rows.length && pocY !== null && vahY !== null && valY !== null) {
+            const developing = settings.developingPoc
+              ? profile.developingPoc.flatMap((p) => {
+                  const px = timeToCoordinate(p.time);
+                  const py = y(p.price);
+                  return px === null || py === null ? [] : [{ x: px, y: py }];
+                })
+              : [];
+            const geometry: VpvrGeometry = {
+              rows,
+              maxVolume: profile.maxVolume,
+              pocY,
+              pocPrice,
+              vahY,
+              vahPrice,
+              valY,
+              valPrice,
+              developing,
+            };
+            vpvrRender = (
+              <VpvrOverlay
+                geometry={geometry}
+                settings={settings}
+                width={chart.timeScale().width()}
+                height={paneOffsets[0].height}
+              />
+            );
+          }
+        }
+      }
+    }
+  }
   void renderTick;
 
   return (
@@ -1979,6 +2050,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       onPointerLeave={() => (hoveredRef.current = false)}
     >
       <div ref={containerRef} className="h-full w-full" />
+      {vpvrRender}
       {measureRender}
       {fibRender}
       {positionRender}
@@ -2093,6 +2165,17 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
               onToggleHide={() => toggleHidden("volume")}
               onSettings={() => setSettingsTarget("volume")}
               onRemove={() => removeIndicator("volume")}
+            />
+          )}
+          {indicators.vpvr && (
+            <IndicatorPill
+              name={`VPVR ${vpvrSettingsRaw.rows} ${vpvrSettingsRaw.valueAreaPct}`}
+              value={vpvrPoc !== undefined ? formatPrice(vpvrPoc) : undefined}
+              color={INDICATOR_COLORS.vpvr}
+              hidden={hidden.vpvr}
+              onToggleHide={() => toggleHidden("vpvr")}
+              onSettings={() => setSettingsTarget("vpvr")}
+              onRemove={() => removeIndicator("vpvr")}
             />
           )}
         </div>

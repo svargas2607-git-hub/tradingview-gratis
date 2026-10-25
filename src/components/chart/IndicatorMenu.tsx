@@ -31,6 +31,7 @@ const ENTRIES: Entry[] = [
   { key: "ema50", group: "Medias móviles", label: (c) => `EMA ${c.ema50}` },
   { key: "ema200", group: "Medias móviles", label: (c) => `EMA ${c.ema200}` },
   { key: "volume", group: "Volumen", label: () => "Volumen" },
+  { key: "vpvr", group: "Volumen", label: () => "Perfil de volumen — rango visible (VPVR)" },
   { key: "rsi", group: "Osciladores", label: (c) => `RSI (${c.rsi})` },
   {
     key: "macd",

@@ -18,6 +18,7 @@ import {
 } from "@/lib/position";
 import { ELLIOTT_COLORS, type ElliottKind } from "@/lib/elliott";
 import { defaultRectangleSettings, type RectangleSettings } from "@/lib/rectangle";
+import { defaultVpvrSettings, type VpvrSettings } from "@/lib/vpvr";
 
 export type IndicatorKey =
   | "ema20"
@@ -25,7 +26,8 @@ export type IndicatorKey =
   | "ema200"
   | "rsi"
   | "macd"
-  | "volume";
+  | "volume"
+  | "vpvr";
 
 export type DrawingTool =
   | "cursor"
@@ -141,6 +143,7 @@ export const INDICATOR_COLORS: Record<IndicatorKey, string> = {
   rsi: "#ab47bc",
   macd: "#2962ff",
   volume: "#787b86",
+  vpvr: "#2962ff",
 };
 
 export const DEFAULT_WATCHLIST = [
@@ -186,6 +189,8 @@ interface ChartState {
   hidden: Record<IndicatorKey, boolean>;
   /** Periods and parameters for each indicator */
   config: IndicatorConfig;
+  /** Volume Profile Visible Range inputs and style (shared by all charts) */
+  vpvrSettings: VpvrSettings;
   watchlist: string[];
   /** Fibonacci drawings (persisted, filtered by symbol when rendering) */
   fibs: FibDrawing[];
@@ -238,6 +243,7 @@ interface ChartState {
   removeIndicator: (key: IndicatorKey) => void;
   toggleHidden: (key: IndicatorKey) => void;
   setConfig: (patch: Partial<IndicatorConfig>) => void;
+  setVpvrSettings: (patch: Partial<VpvrSettings>) => void;
   addToWatchlist: (s: string) => void;
   removeFromWatchlist: (s: string) => void;
   setTool: (t: DrawingTool) => void;
@@ -311,6 +317,7 @@ export const useChartStore = create<ChartState>()(
         rsi: true,
         macd: false,
         volume: true,
+        vpvr: false,
       },
       hidden: {
         ema20: false,
@@ -319,8 +326,10 @@ export const useChartStore = create<ChartState>()(
         rsi: false,
         macd: false,
         volume: false,
+        vpvr: false,
       },
       config: { ...DEFAULT_CONFIG },
+      vpvrSettings: defaultVpvrSettings(),
       watchlist: DEFAULT_WATCHLIST,
       fibs: [],
       fibDefaults: {},
@@ -432,6 +441,8 @@ export const useChartStore = create<ChartState>()(
         set((s) => withActivePane(s, { hidden: { ...s.hidden, [key]: !s.hidden[key] } })),
       setConfig: (patch) =>
         set((s) => withActivePane(s, { config: { ...s.config, ...patch } })),
+      setVpvrSettings: (patch) =>
+        set((s) => ({ vpvrSettings: { ...s.vpvrSettings, ...patch } })),
       addToWatchlist: (s) =>
         set((state) => ({
           watchlist: state.watchlist.includes(s)
@@ -736,6 +747,7 @@ export const useChartStore = create<ChartState>()(
         indicators: s.indicators,
         hidden: s.hidden,
         config: s.config,
+        vpvrSettings: s.vpvrSettings,
         watchlist: s.watchlist,
         fibs: s.fibs,
         fibDefaults: s.fibDefaults,

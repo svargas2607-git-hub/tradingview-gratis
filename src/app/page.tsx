@@ -6,6 +6,7 @@ import { RightSidebar } from "@/components/layout/RightSidebar";
 import { BottomPanel } from "@/components/layout/BottomPanel";
 import { PriceChart } from "@/components/chart/PriceChart";
 import { IndicatorSettingsDialog } from "@/components/chart/IndicatorSettingsDialog";
+import { VpvrSettingsDialog } from "@/components/chart/VpvrSettingsDialog";
 import { FibSettingsDialog } from "@/components/chart/FibSettingsDialog";
 import { TrendLineSettingsDialog } from "@/components/chart/TrendLineSettingsDialog";
 import { RectangleSettingsDialog } from "@/components/chart/RectangleSettingsDialog";
@@ -104,6 +105,7 @@ export default function HomePage() {
       </div>
       <BottomPanel />
       <IndicatorSettingsDialog />
+      <VpvrSettingsDialog />
       <FibSettingsDialog />
       <TrendLineSettingsDialog />
       <RectangleSettingsDialog />

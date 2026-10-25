@@ -22,6 +22,7 @@ const TITLES: Record<IndicatorKey, string> = {
   rsi: "RSI",
   macd: "MACD",
   volume: "Volumen",
+  vpvr: "VPVR",
 };
 
 export function IndicatorSettingsDialog() {
@@ -30,7 +31,8 @@ export function IndicatorSettingsDialog() {
   const config = useChartStore((s) => s.config);
   const setConfig = useChartStore((s) => s.setConfig);
 
-  const open = target !== null;
+  // VPVR has its own dialog (VpvrSettingsDialog)
+  const open = target !== null && target !== "vpvr";
 
   return (
     <Dialog
