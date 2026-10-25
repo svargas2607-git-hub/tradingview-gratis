@@ -50,7 +50,7 @@ import {
 } from "@/lib/position";
 import { ELLIOTT_COLORS, ELLIOTT_POINT_COUNT, type ElliottKind } from "@/lib/elliott";
 import { ElliottOverlay, type ElliottGeometry } from "./ElliottOverlay";
-import { RECTANGLE_COLOR } from "@/lib/rectangle";
+import { defaultRectangleSettings, rectangleBox, rectangleSettingsOf } from "@/lib/rectangle";
 import { RectangleOverlay, type RectangleGeometry } from "./RectangleOverlay";
 
 const ELLIOTT_TOOLS: Partial<Record<DrawingTool, ElliottKind>> = {
@@ -215,6 +215,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const positions = useChartStore((s) => s.positions);
   const elliotts = useChartStore((s) => s.elliotts);
   const rectangles = useChartStore((s) => s.rectangles);
+  const rectangleDefaults = useChartStore((s) => s.rectangleDefaults);
   const addPriceLine = useChartStore((s) => s.addPriceLine);
   const removeIndicator = useChartStore((s) => s.removeIndicator);
   const toggleHidden = useChartStore((s) => s.toggleHidden);
@@ -950,13 +951,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
         }
       }
       for (const [id, g] of rects) {
-        const [a, b] = g.points;
-        if (
-          p.x >= Math.min(a.x, b.x) - HIT_PX &&
-          p.x <= Math.max(a.x, b.x) + HIT_PX &&
-          p.y >= Math.min(a.y, b.y) - HIT_PX &&
-          p.y <= Math.max(a.y, b.y) + HIT_PX
-        ) {
+        const { x1, x2, y1, y2 } = g.box;
+        if (p.x >= x1 - HIT_PX && p.x <= x2 + HIT_PX && p.y >= y1 - HIT_PX && p.y <= y2 + HIT_PX) {
           return { id, type: "rectangle", anchor: null, locked: g.locked };
         }
       }
@@ -1214,6 +1210,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       store.selectFib(hit.id);
       if (hit.type === "trend") store.setTrendSettingsTarget(hit.id);
       else if (hit.type === "position") store.setPositionSettingsTarget(hit.id);
+      else if (hit.type === "rectangle") store.setRectangleSettingsTarget(hit.id);
       else if (hit.type === "fib") store.setFibSettingsTarget(hit.id);
     };
 
@@ -1229,7 +1226,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
     const onKey = (e: KeyboardEvent) => {
       const store = useChartStore.getState();
       const dialogOpen =
-        !!store.fibSettingsTarget || !!store.trendSettingsTarget || !!store.positionSettingsTarget;
+        !!store.fibSettingsTarget ||
+        !!store.trendSettingsTarget ||
+        !!store.positionSettingsTarget ||
+        !!store.rectangleSettingsTarget;
       if (e.key === "Escape") {
         setFibDraft(null);
         setElliottDraft(null);
@@ -1863,7 +1863,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       .map((r) => ({
         key: r.id,
         points: fibDragPoints?.id === r.id ? fibDragPoints.points : r.points,
-        color: r.color,
+        settings: rectangleSettingsOf(r),
         locked: !!r.locked,
         isPreview: false,
       }));
@@ -1871,7 +1871,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       toDraw.push({
         key: "rect-draft",
         points: rectDraft,
-        color: RECTANGLE_COLOR,
+        settings: rectangleSettingsOf({ settings: rectangleDefaults ?? defaultRectangleSettings() }),
         locked: false,
         isPreview: true,
       });
@@ -1883,14 +1883,17 @@ export function PriceChart({ symbol, timeframe }: Props) {
         return x === null || y === null ? [] : [{ x, y }];
       });
       if (pts.length !== r.points.length) continue;
-      if (!r.isPreview) rectGeometry.set(r.key, { points: pts, locked: r.locked });
+      const box = rectangleBox(pts[0], pts[1], r.settings, areaWidth);
+      if (!r.isPreview) rectGeometry.set(r.key, { points: pts, box, locked: r.locked });
 
       const selected = r.key === selectedFibId;
       rectRender.push(
         <RectangleOverlay
           key={r.key}
-          color={r.color}
+          settings={r.settings}
           points={pts}
+          box={box}
+          prices={r.points.map((p) => p.price)}
           isPreview={r.isPreview}
           selected={selected}
           width={areaWidth}
@@ -1898,16 +1901,16 @@ export function PriceChart({ symbol, timeframe }: Props) {
         />,
       );
       if (selected) {
-        const xs = pts.map((p) => p.x);
-        const top = Math.min(...pts.map((p) => p.y)) - 12;
-        const toolbarY = top >= 90 ? top : Math.max(...pts.map((p) => p.y)) + 44;
+        const top = box.y1 - 12;
+        const toolbarY = top >= 90 ? top : box.y2 + 44;
         const id = r.key;
         const locked = r.locked;
         fibToolbar = (
           <FibToolbar
-            x={Math.max(80, Math.min(areaWidth - 80, (Math.min(...xs) + Math.max(...xs)) / 2))}
+            x={Math.max(80, Math.min(areaWidth - 80, (box.x1 + box.x2) / 2))}
             y={Math.max(40, Math.min(areaHeight - 4, toolbarY))}
             locked={locked}
+            onSettings={() => useChartStore.getState().setRectangleSettingsTarget(id)}
             onToggleLock={() => useChartStore.getState().updateRectangle(id, { locked: !locked })}
             onClone={() => useChartStore.getState().cloneRectangle(id)}
             onRemove={() => useChartStore.getState().removeRectangle(id)}

@@ -141,6 +141,7 @@ function SettingsBody({ line, onClose }: { line: TrendLineDrawing; onClose: () =
               <LevelInput
                 value={p.price}
                 wide
+                price
                 onChange={(price) =>
                   updateTrendLine(line.id, {
                     points: line.points.map((q, j) => (j === i ? { ...q, price } : q)),

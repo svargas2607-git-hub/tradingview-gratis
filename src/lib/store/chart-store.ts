@@ -17,7 +17,7 @@ import {
   type PositionSide,
 } from "@/lib/position";
 import { ELLIOTT_COLORS, type ElliottKind } from "@/lib/elliott";
-import { RECTANGLE_COLOR } from "@/lib/rectangle";
+import { defaultRectangleSettings, type RectangleSettings } from "@/lib/rectangle";
 
 export type IndicatorKey =
   | "ema20"
@@ -101,7 +101,10 @@ export interface RectangleDrawing {
   symbol: string;
   /** Two opposite corners */
   points: FibPoint[];
-  color: string;
+  /** Style; missing on rectangles saved before the settings dialog existed */
+  settings?: RectangleSettings;
+  /** Single color of those older rectangles */
+  color?: string;
   locked?: boolean;
 }
 
@@ -179,6 +182,8 @@ interface ChartState {
   elliotts: ElliottDrawing[];
   /** Rectangles (persisted, filtered by symbol when rendering) */
   rectangles: RectangleDrawing[];
+  /** Style new rectangles start with (null = TradingView defaults) */
+  rectangleDefaults: RectangleSettings | null;
   /** Magnet: drawing points snap to the OHLC of the bar under the cursor */
   magnet: boolean;
   magnetMode: MagnetMode;
@@ -195,6 +200,8 @@ interface ChartState {
   fibSettingsTarget: string | null;
   /** Trend line whose settings dialog is open (null = closed) */
   trendSettingsTarget: string | null;
+  /** Rectangle whose settings dialog is open (null = closed) */
+  rectangleSettingsTarget: string | null;
   /** Position whose settings dialog is open (null = closed) */
   positionSettingsTarget: string | null;
 
@@ -244,6 +251,8 @@ interface ChartState {
   updateRectangle: (id: string, patch: Partial<Omit<RectangleDrawing, "id">>) => void;
   removeRectangle: (id: string) => void;
   cloneRectangle: (id: string) => void;
+  setRectangleSettingsTarget: (id: string | null) => void;
+  setRectangleDefaults: (settings: RectangleSettings | null) => void;
   setMagnet: (on: boolean) => void;
   /** Picking a mode also turns the magnet on, like TradingView */
   setMagnetMode: (mode: MagnetMode) => void;
@@ -282,6 +291,7 @@ export const useChartStore = create<ChartState>()(
       positionDefaults: null,
       elliotts: [],
       rectangles: [],
+      rectangleDefaults: null,
       magnet: false,
       magnetMode: "weak",
       tool: "cursor",
@@ -291,6 +301,7 @@ export const useChartStore = create<ChartState>()(
       selectedFibId: null,
       fibSettingsTarget: null,
       trendSettingsTarget: null,
+      rectangleSettingsTarget: null,
       positionSettingsTarget: null,
 
       setSymbol: (symbol) => set({ symbol }),
@@ -510,13 +521,19 @@ export const useChartStore = create<ChartState>()(
       addRectangle: (points, symbol) =>
         set((state) => {
           const id = newId();
-          const rect: RectangleDrawing = { id, symbol, points, color: RECTANGLE_COLOR };
+          const rect: RectangleDrawing = {
+            id,
+            symbol,
+            points,
+            settings: { ...(state.rectangleDefaults ?? defaultRectangleSettings()) },
+          };
           return { rectangles: [...state.rectangles, rect], selectedFibId: id };
         }),
       clearRectangles: (symbol) =>
         set((state) => ({
           rectangles: symbol ? state.rectangles.filter((r) => r.symbol !== symbol) : [],
           selectedFibId: null,
+          rectangleSettingsTarget: null,
         })),
       updateRectangle: (id, patch) =>
         set((state) => ({
@@ -526,6 +543,8 @@ export const useChartStore = create<ChartState>()(
         set((state) => ({
           rectangles: state.rectangles.filter((r) => r.id !== id),
           selectedFibId: state.selectedFibId === id ? null : state.selectedFibId,
+          rectangleSettingsTarget:
+            state.rectangleSettingsTarget === id ? null : state.rectangleSettingsTarget,
         })),
       cloneRectangle: (id) =>
         set((state) => {
@@ -535,10 +554,14 @@ export const useChartStore = create<ChartState>()(
             ...src,
             id: newId(),
             points: src.points.map((p) => ({ ...p })),
+            settings: src.settings && { ...src.settings },
             locked: false,
           };
           return { rectangles: [...state.rectangles, copy], selectedFibId: copy.id };
         }),
+      setRectangleSettingsTarget: (rectangleSettingsTarget) => set({ rectangleSettingsTarget }),
+      setRectangleDefaults: (settings) =>
+        set({ rectangleDefaults: settings && { ...settings } }),
       setMagnet: (magnet) => set({ magnet }),
       setMagnetMode: (magnetMode) => set({ magnetMode, magnet: true }),
       setSymbolDialogOpen: (symbolDialogOpen) => set({ symbolDialogOpen }),
@@ -608,6 +631,7 @@ export const useChartStore = create<ChartState>()(
         positionDefaults: s.positionDefaults,
         elliotts: s.elliotts,
         rectangles: s.rectangles,
+        rectangleDefaults: s.rectangleDefaults,
         magnet: s.magnet,
         magnetMode: s.magnetMode,
       }),

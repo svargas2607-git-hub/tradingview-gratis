@@ -104,14 +104,14 @@ function SettingsBody({ position, onClose }: { position: PositionDrawing; onClos
             </span>
           </Row>
           <Row label="Precio de entrada">
-            <LevelInput value={entry} wide onChange={setEntry} />
+            <LevelInput value={entry} wide price onChange={setEntry} />
           </Row>
           <Row label="Nivel de beneficio">
-            <LevelInput value={position.tp} wide onChange={setTp} />
+            <LevelInput value={position.tp} wide price onChange={setTp} />
             <span className="text-tv-text-muted tabular-nums">{stats.targetPct.toFixed(2)}%</span>
           </Row>
           <Row label="Nivel de stop">
-            <LevelInput value={position.sl} wide onChange={setSl} />
+            <LevelInput value={position.sl} wide price onChange={setSl} />
             <span className="text-tv-text-muted tabular-nums">{stats.stopPct.toFixed(2)}%</span>
           </Row>
           <div className="rounded border border-tv-border bg-tv-bg p-2 text-tv-text-muted tabular-nums">

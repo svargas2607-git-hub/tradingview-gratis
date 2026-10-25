@@ -20,6 +20,7 @@ import {
   type FibSettings,
 } from "@/lib/fibonacci";
 import { cn } from "@/lib/utils";
+import { roundPrice } from "@/lib/format";
 
 const TITLES = {
   retracement: "Retroceso de Fibonacci",
@@ -233,6 +234,7 @@ function SettingsBody({ fib, onClose }: { fib: FibDrawing; onClose: () => void }
               <LevelInput
                 value={p.price}
                 wide
+                price
                 onChange={(price) =>
                   updateFib(fib.id, {
                     points: fib.points.map((q, j) => (j === i ? { ...q, price } : q)),
@@ -385,17 +387,21 @@ export function LevelInput({
   value,
   onChange,
   wide,
+  price,
 }: {
   value: number;
   onChange: (n: number) => void;
   wide?: boolean;
+  /** Price coordinate: shown and stored with limited decimals */
+  price?: boolean;
 }) {
-  const [text, setText] = useState(String(value));
+  const fix = (n: number) => (price ? roundPrice(n) : n);
+  const [text, setText] = useState(String(fix(value)));
   // Resync when the value changes from outside (reset, cancel, drag)
   const [synced, setSynced] = useState(value);
   if (synced !== value) {
     setSynced(value);
-    if (parseFloat(text) !== value) setText(String(value));
+    if (parseFloat(text) !== fix(value)) setText(String(fix(value)));
   }
   return (
     <input
@@ -406,9 +412,9 @@ export function LevelInput({
         const raw = e.target.value.replace(",", ".");
         setText(raw);
         const n = parseFloat(raw);
-        if (!isNaN(n) && isFinite(n)) onChange(n);
+        if (!isNaN(n) && isFinite(n)) onChange(fix(n));
       }}
-      onBlur={() => setText(String(value))}
+      onBlur={() => setText(String(fix(value)))}
       className={cn(
         "h-6 rounded border border-tv-border bg-tv-bg px-1.5 text-xs tabular-nums text-tv-text outline-none focus:border-tv-blue",
         wide ? "w-28" : "w-16",
