@@ -87,6 +87,14 @@ function ElliottCorrectionIcon({ className }: { className?: string }) {
   );
 }
 
+function RectangleIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinejoin="round" className={className}>
+      <rect x="4" y="6" width="16" height="12" rx="1" />
+    </svg>
+  );
+}
+
 const TOOLS: ToolDef[] = [
   { key: "cursor", icon: MousePointer2, label: "Cursor", hint: "Modo navegación" },
   {
@@ -100,6 +108,12 @@ const TOOLS: ToolDef[] = [
     icon: TrendLineIcon,
     label: "Línea de tendencia",
     hint: "Click en dos puntos o arrastrá · Esc cancela",
+  },
+  {
+    key: "rectangle",
+    icon: RectangleIcon,
+    label: "Rectángulo",
+    hint: "Click en dos esquinas opuestas · Esc cancela",
   },
   {
     key: "measure",
@@ -236,6 +250,7 @@ export function LeftSidebar() {
   const clearTrendLines = useChartStore((s) => s.clearTrendLines);
   const clearPositions = useChartStore((s) => s.clearPositions);
   const clearElliotts = useChartStore((s) => s.clearElliotts);
+  const clearRectangles = useChartStore((s) => s.clearRectangles);
   const symbol = useChartStore((s) => s.symbol);
 
   return (
@@ -279,6 +294,7 @@ export function LeftSidebar() {
             clearTrendLines(symbol);
             clearPositions(symbol);
             clearElliotts(symbol);
+            clearRectangles(symbol);
           }}
           aria-label="Borrar dibujos"
           className="flex h-8 w-8 items-center justify-center rounded text-tv-text-muted hover:bg-tv-panel-hover hover:text-tv-red"
@@ -288,7 +304,7 @@ export function LeftSidebar() {
         <TooltipContent side="right" className="text-xs">
           <div className="font-medium">Borrar dibujos</div>
           <div className="mt-0.5 text-[10px] text-tv-text-muted">
-            Limpia las líneas, tendencias, Fibonacci, posiciones y ondas de Elliott de este símbolo
+            Limpia las líneas, tendencias, Fibonacci, posiciones, ondas de Elliott y rectángulos de este símbolo
           </div>
         </TooltipContent>
       </Tooltip>

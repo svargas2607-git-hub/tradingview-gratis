@@ -50,6 +50,8 @@ import {
 } from "@/lib/position";
 import { ELLIOTT_COLORS, ELLIOTT_POINT_COUNT, type ElliottKind } from "@/lib/elliott";
 import { ElliottOverlay, type ElliottGeometry } from "./ElliottOverlay";
+import { RECTANGLE_COLOR } from "@/lib/rectangle";
+import { RectangleOverlay, type RectangleGeometry } from "./RectangleOverlay";
 
 const ELLIOTT_TOOLS: Partial<Record<DrawingTool, ElliottKind>> = {
   elliottImpulse: "impulse",
@@ -79,7 +81,7 @@ interface ElliottDraft {
 }
 
 /** Kind of drawing that can be selected and dragged */
-type DrawingType = "fib" | "trend" | "position" | "elliott";
+type DrawingType = "fib" | "trend" | "position" | "elliott" | "rectangle";
 
 /** Drawing being dragged: a single anchor, or the whole drawing (anchor = null) */
 interface FibDrag {
@@ -212,6 +214,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const trendLineDefaults = useChartStore((s) => s.trendLineDefaults);
   const positions = useChartStore((s) => s.positions);
   const elliotts = useChartStore((s) => s.elliotts);
+  const rectangles = useChartStore((s) => s.rectangles);
   const addPriceLine = useChartStore((s) => s.addPriceLine);
   const removeIndicator = useChartStore((s) => s.removeIndicator);
   const toggleHidden = useChartStore((s) => s.toggleHidden);
@@ -241,6 +244,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const [elliottDraft, setElliottDraft] = useState<ElliottDraft | null>(null);
   const elliottDraftRef = useRef(elliottDraft);
   elliottDraftRef.current = elliottDraft;
+  /** Rectangle being placed: the second corner follows the mouse until clicked */
+  const [rectDraft, setRectDraft] = useState<FibPoint[] | null>(null);
+  const rectDraftRef = useRef(rectDraft);
+  rectDraftRef.current = rectDraft;
   /** Trend line being placed: B follows the mouse until clicked / released */
   const [trendDraft, setTrendDraft] = useState<FibPoint[] | null>(null);
   const trendDraftRef = useRef(trendDraft);
@@ -255,6 +262,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const trendGeometryRef = useRef<Map<string, TrendGeometry & { locked: boolean }>>(new Map());
   const positionGeometryRef = useRef<Map<string, PositionGeometry & { locked: boolean }>>(new Map());
   const elliottGeometryRef = useRef<Map<string, ElliottGeometry & { locked: boolean }>>(new Map());
+  const rectGeometryRef = useRef<Map<string, RectangleGeometry & { locked: boolean }>>(new Map());
   /** Ctrl held: inverts the magnet while pressed */
   const ctrlHeldRef = useRef(false);
   /** Where the magnet snapped the cursor (px), shown as a dot */
@@ -507,6 +515,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         FIB_TOOLS[toolRef.current] ||
         POSITION_TOOLS[toolRef.current] ||
         ELLIOTT_TOOLS[toolRef.current] ||
+        toolRef.current === "rectangle" ||
         toolRef.current === "trendLine"
       ) {
         return;
@@ -827,13 +836,15 @@ export function PriceChart({ symbol, timeframe }: Props) {
         tool === "trendLine" ||
         FIB_TOOLS[tool] ||
         POSITION_TOOLS[tool] ||
-        ELLIOTT_TOOLS[tool]
+        ELLIOTT_TOOLS[tool] ||
+        tool === "rectangle"
           ? "crosshair"
           : "";
     }
     if (tool !== "measure") setMeasure(INITIAL_MEASURE);
     setFibDraft(null);
     setElliottDraft(null);
+    setRectDraft(null);
     setTrendDraft(null);
     if (tool !== "cursor") useChartStore.getState().selectFib(null);
     setSnapDot(null);
@@ -905,6 +916,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       const trends = [...trendGeometryRef.current.entries()].reverse();
       const positionsGeo = [...positionGeometryRef.current.entries()].reverse();
       const waves = [...elliottGeometryRef.current.entries()].reverse();
+      const rects = [...rectGeometryRef.current.entries()].reverse();
       const anchorOf = (pts: { x: number; y: number }[]) =>
         pts.findIndex((a) => Math.hypot(a.x - p.x, a.y - p.y) <= HIT_PX);
       for (const [id, g] of trends) {
@@ -919,6 +931,10 @@ export function PriceChart({ symbol, timeframe }: Props) {
         const anchor = anchorOf(g.points);
         if (anchor >= 0) return { id, type: "elliott", anchor, locked: g.locked };
       }
+      for (const [id, g] of rects) {
+        const anchor = anchorOf(g.points);
+        if (anchor >= 0) return { id, type: "rectangle", anchor, locked: g.locked };
+      }
       for (const [id, g] of entries) {
         const anchor = anchorOf(g.points);
         if (anchor >= 0) return { id, type: "fib", anchor, locked: g.locked };
@@ -931,6 +947,17 @@ export function PriceChart({ symbol, timeframe }: Props) {
       for (const [id, g] of waves) {
         if (g.points.some((a, i) => i > 0 && distToSegment(p, g.points[i - 1], a) <= HIT_PX)) {
           return { id, type: "elliott", anchor: null, locked: g.locked };
+        }
+      }
+      for (const [id, g] of rects) {
+        const [a, b] = g.points;
+        if (
+          p.x >= Math.min(a.x, b.x) - HIT_PX &&
+          p.x <= Math.max(a.x, b.x) + HIT_PX &&
+          p.y >= Math.min(a.y, b.y) - HIT_PX &&
+          p.y <= Math.max(a.y, b.y) + HIT_PX
+        ) {
+          return { id, type: "rectangle", anchor: null, locked: g.locked };
         }
       }
       for (const [id, g] of positionsGeo) {
@@ -984,7 +1011,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
             ? positionAnchors(position)
             : hit.type === "elliott"
               ? store.elliotts.find((w) => w.id === hit.id)?.points
-              : store.fibs.find((f) => f.id === hit.id)?.points;
+              : hit.type === "rectangle"
+                ? store.rectangles.find((r) => r.id === hit.id)?.points
+                : store.fibs.find((f) => f.id === hit.id)?.points;
       // Moving the whole drawing keeps its shape: only anchors snap
       const start = pointAtRef.current(local.x, local.y, false);
       if (!orig || hit.locked || !start) return;
@@ -1019,6 +1048,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
           if (drag.type === "trend") store.updateTrendLine(drag.id, { points: drag.points });
           else if (drag.type === "position") store.updatePosition(drag.id, positionFromAnchors(drag.points));
           else if (drag.type === "elliott") store.updateElliott(drag.id, { points: drag.points });
+          else if (drag.type === "rectangle") store.updateRectangle(drag.id, { points: drag.points });
           else store.updateFib(drag.id, { points: drag.points });
         }
         setFibDragPoints(null);
@@ -1058,6 +1088,21 @@ export function PriceChart({ symbol, timeframe }: Props) {
       const side = POSITION_TOOLS[toolRef.current];
       if (side) {
         if (local) placePositionRef.current(side, local);
+        return;
+      }
+
+      if (toolRef.current === "rectangle") {
+        const p = local && pointAtRef.current(local.x, local.y);
+        if (!p) return;
+        const draft = rectDraftRef.current;
+        if (!draft) {
+          setRectDraft([p, p]);
+          return;
+        }
+        const store = useChartStore.getState();
+        store.addRectangle([draft[0], p], symbolRef.current);
+        store.setTool("cursor");
+        setRectDraft(null);
         return;
       }
 
@@ -1134,6 +1179,12 @@ export function PriceChart({ symbol, timeframe }: Props) {
         setTrendDraft((prev) => (prev ? [prev[0], p] : prev));
         return;
       }
+      if (toolRef.current === "rectangle") {
+        const p = local && pointAtRef.current(local.x, local.y);
+        if (!p) return;
+        setRectDraft((prev) => (prev ? [prev[0], p] : prev));
+        return;
+      }
       if (ELLIOTT_TOOLS[toolRef.current]) {
         const p = local && pointAtRef.current(local.x, local.y);
         if (!p || !elliottDraftRef.current) return;
@@ -1182,6 +1233,8 @@ export function PriceChart({ symbol, timeframe }: Props) {
       if (e.key === "Escape") {
         setFibDraft(null);
         setElliottDraft(null);
+        rectDraftRef.current = null;
+        setRectDraft(null);
         trendDraftRef.current = null;
         setTrendDraft(null);
         if (!dialogOpen) store.selectFib(null);
@@ -1197,6 +1250,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
         store.removeTrendLine(store.selectedFibId);
         store.removePosition(store.selectedFibId);
         store.removeElliott(store.selectedFibId);
+        store.removeRectangle(store.selectedFibId);
       }
     };
 
@@ -1796,6 +1850,73 @@ export function PriceChart({ symbol, timeframe }: Props) {
     }
   }
   elliottGeometryRef.current = elliottGeometry;
+
+  // Rectangles for this symbol + the one being placed
+  const rectRender: React.ReactNode[] = [];
+  const rectGeometry: typeof rectGeometryRef.current = new Map();
+  if (chartRef.current && candleSeriesRef.current && paneOffsets[0]) {
+    const series = candleSeriesRef.current;
+    const areaWidth = chartRef.current.timeScale().width();
+    const areaHeight = paneOffsets[0].height;
+    const toDraw = rectangles
+      .filter((r) => r.symbol === symbol)
+      .map((r) => ({
+        key: r.id,
+        points: fibDragPoints?.id === r.id ? fibDragPoints.points : r.points,
+        color: r.color,
+        locked: !!r.locked,
+        isPreview: false,
+      }));
+    if (rectDraft) {
+      toDraw.push({
+        key: "rect-draft",
+        points: rectDraft,
+        color: RECTANGLE_COLOR,
+        locked: false,
+        isPreview: true,
+      });
+    }
+    for (const r of toDraw) {
+      const pts = r.points.flatMap((p) => {
+        const x = timeToCoordinate(p.time);
+        const y = series.priceToCoordinate(p.price);
+        return x === null || y === null ? [] : [{ x, y }];
+      });
+      if (pts.length !== r.points.length) continue;
+      if (!r.isPreview) rectGeometry.set(r.key, { points: pts, locked: r.locked });
+
+      const selected = r.key === selectedFibId;
+      rectRender.push(
+        <RectangleOverlay
+          key={r.key}
+          color={r.color}
+          points={pts}
+          isPreview={r.isPreview}
+          selected={selected}
+          width={areaWidth}
+          height={areaHeight}
+        />,
+      );
+      if (selected) {
+        const xs = pts.map((p) => p.x);
+        const top = Math.min(...pts.map((p) => p.y)) - 12;
+        const toolbarY = top >= 90 ? top : Math.max(...pts.map((p) => p.y)) + 44;
+        const id = r.key;
+        const locked = r.locked;
+        fibToolbar = (
+          <FibToolbar
+            x={Math.max(80, Math.min(areaWidth - 80, (Math.min(...xs) + Math.max(...xs)) / 2))}
+            y={Math.max(40, Math.min(areaHeight - 4, toolbarY))}
+            locked={locked}
+            onToggleLock={() => useChartStore.getState().updateRectangle(id, { locked: !locked })}
+            onClone={() => useChartStore.getState().cloneRectangle(id)}
+            onRemove={() => useChartStore.getState().removeRectangle(id)}
+          />
+        );
+      }
+    }
+  }
+  rectGeometryRef.current = rectGeometry;
   void renderTick;
 
   return (
@@ -1804,6 +1925,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
       {measureRender}
       {fibRender}
       {positionRender}
+      {rectRender}
       {elliottRender}
       {trendRender}
       {snapDot && (
