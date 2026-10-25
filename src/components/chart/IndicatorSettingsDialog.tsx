@@ -23,6 +23,7 @@ const TITLES: Record<IndicatorKey, string> = {
   macd: "MACD",
   volume: "Volumen",
   vpvr: "VPVR",
+  vwap: "VWAP",
 };
 
 export function IndicatorSettingsDialog() {
@@ -31,8 +32,8 @@ export function IndicatorSettingsDialog() {
   const config = useChartStore((s) => s.config);
   const setConfig = useChartStore((s) => s.setConfig);
 
-  // VPVR has its own dialog (VpvrSettingsDialog)
-  const open = target !== null && target !== "vpvr";
+  // VPVR and VWAP have their own dialogs
+  const open = target !== null && target !== "vpvr" && target !== "vwap";
 
   return (
     <Dialog

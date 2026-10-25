@@ -19,6 +19,7 @@ import {
 import { ELLIOTT_COLORS, type ElliottKind } from "@/lib/elliott";
 import { defaultRectangleSettings, type RectangleSettings } from "@/lib/rectangle";
 import { defaultVpvrSettings, type VpvrSettings } from "@/lib/vpvr";
+import { defaultVwapSettings, type VwapSettings } from "@/lib/vwap";
 
 export type IndicatorKey =
   | "ema20"
@@ -27,7 +28,8 @@ export type IndicatorKey =
   | "rsi"
   | "macd"
   | "volume"
-  | "vpvr";
+  | "vpvr"
+  | "vwap";
 
 export type DrawingTool =
   | "cursor"
@@ -144,6 +146,7 @@ export const INDICATOR_COLORS: Record<IndicatorKey, string> = {
   macd: "#2962ff",
   volume: "#787b86",
   vpvr: "#2962ff",
+  vwap: "#2962ff",
 };
 
 export const DEFAULT_WATCHLIST = [
@@ -191,6 +194,8 @@ interface ChartState {
   config: IndicatorConfig;
   /** Volume Profile Visible Range inputs and style (shared by all charts) */
   vpvrSettings: VpvrSettings;
+  /** VWAP inputs and style (shared by all charts) */
+  vwapSettings: VwapSettings;
   watchlist: string[];
   /** Fibonacci drawings (persisted, filtered by symbol when rendering) */
   fibs: FibDrawing[];
@@ -244,6 +249,7 @@ interface ChartState {
   toggleHidden: (key: IndicatorKey) => void;
   setConfig: (patch: Partial<IndicatorConfig>) => void;
   setVpvrSettings: (patch: Partial<VpvrSettings>) => void;
+  setVwapSettings: (patch: Partial<VwapSettings>) => void;
   addToWatchlist: (s: string) => void;
   removeFromWatchlist: (s: string) => void;
   setTool: (t: DrawingTool) => void;
@@ -318,6 +324,7 @@ export const useChartStore = create<ChartState>()(
         macd: false,
         volume: true,
         vpvr: false,
+        vwap: false,
       },
       hidden: {
         ema20: false,
@@ -327,9 +334,11 @@ export const useChartStore = create<ChartState>()(
         macd: false,
         volume: false,
         vpvr: false,
+        vwap: false,
       },
       config: { ...DEFAULT_CONFIG },
       vpvrSettings: defaultVpvrSettings(),
+      vwapSettings: defaultVwapSettings(),
       watchlist: DEFAULT_WATCHLIST,
       fibs: [],
       fibDefaults: {},
@@ -443,6 +452,8 @@ export const useChartStore = create<ChartState>()(
         set((s) => withActivePane(s, { config: { ...s.config, ...patch } })),
       setVpvrSettings: (patch) =>
         set((s) => ({ vpvrSettings: { ...s.vpvrSettings, ...patch } })),
+      setVwapSettings: (patch) =>
+        set((s) => ({ vwapSettings: { ...s.vwapSettings, ...patch } })),
       addToWatchlist: (s) =>
         set((state) => ({
           watchlist: state.watchlist.includes(s)
@@ -748,6 +759,7 @@ export const useChartStore = create<ChartState>()(
         hidden: s.hidden,
         config: s.config,
         vpvrSettings: s.vpvrSettings,
+        vwapSettings: s.vwapSettings,
         watchlist: s.watchlist,
         fibs: s.fibs,
         fibDefaults: s.fibDefaults,

@@ -57,6 +57,9 @@ import { RectangleOverlay, type RectangleGeometry } from "./RectangleOverlay";
 
 import { computeVpvr, vpvrSettingsOf } from "@/lib/vpvr";
 import { VpvrOverlay, type VpvrGeometry } from "./VpvrOverlay";
+import { computeVwap, isDailyOrHigher, vwapSettingsOf } from "@/lib/vwap";
+import { VwapOverlay, type VwapGeometry, type VwapSegment } from "./VwapOverlay";
+import { VWAP_ANCHORS } from "./VwapSettingsDialog";
 
 const ELLIOTT_TOOLS: Partial<Record<DrawingTool, ElliottKind>> = {
   elliottImpulse: "impulse",
@@ -211,6 +214,10 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
   const macdRef = useRef<ISeriesApi<"Line"> | null>(null);
   const macdSignalRef = useRef<ISeriesApi<"Line"> | null>(null);
   const macdHistRef = useRef<ISeriesApi<"Histogram"> | null>(null);
+  /** Invisible line series that only exist to show the VWAP values on the price scale: VWAP, then upper/lower of each band */
+  const vwapLabelRefs = useRef<ISeriesApi<"Line">[]>([]);
+  /** What the VWAP labels need to know, kept current for the callbacks that outlive a render */
+  const vwapStateRef = useRef({ on: false, timeframe });
   const candlesRef = useRef<Candle[]>([]);
   const priceLinesMapRef = useRef<Map<string, IPriceLine>>(new Map());
 
@@ -226,6 +233,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
   const rectangles = useChartStore((s) => s.rectangles);
   const rectangleDefaults = useChartStore((s) => s.rectangleDefaults);
   const vpvrSettingsRaw = useChartStore((s) => s.vpvrSettings);
+  const vwapSettingsRaw = useChartStore((s) => s.vwapSettings);
   const addPriceLine = useChartStore((s) => s.addPriceLine);
   const removeIndicator = useChartStore((s) => s.removeIndicator);
   const toggleHidden = useChartStore((s) => s.toggleHidden);
@@ -516,6 +524,18 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       lastValueVisible: false,
     });
 
+    vwapLabelRefs.current = Array.from({ length: 7 }, () =>
+      chart.addSeries(LineSeries, {
+        lineVisible: false,
+        pointMarkersVisible: false,
+        crosshairMarkerVisible: false,
+        priceLineVisible: false,
+        lastValueVisible: false,
+        // The overlay draws the lines: these must not stretch the price range
+        autoscaleInfoProvider: () => null,
+      }),
+    );
+
     chartRef.current = chart;
 
     // Click handler — add horizontal price line when hline tool is active
@@ -677,6 +697,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       ema20Ref.current = null;
       ema50Ref.current = null;
       ema200Ref.current = null;
+      vwapLabelRefs.current = [];
       rsiRef.current = null;
       rsi30Ref.current = null;
       rsi70Ref.current = null;
@@ -837,6 +858,14 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
     if (macdHistRef.current) macdHistRef.current.applyOptions({ visible: v("macd") });
     if (volumeSeriesRef.current) volumeSeriesRef.current.applyOptions({ visible: v("volume") });
   }, [indicators, hidden]);
+
+  // VWAP price tags: refresh when it is toggled, its settings change or the timeframe does
+  const vwapOn = !!indicators.vwap && !hidden.vwap;
+  vwapStateRef.current = { on: vwapOn, timeframe };
+  useEffect(() => {
+    updateVwapLabels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vwapOn, vwapSettingsRaw, timeframe]);
 
   // Recompute indicators when config changes (periods)
   useEffect(() => {
@@ -1358,6 +1387,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       );
       last200 = data.at(-1)?.value;
     }
+    updateVwapLabels();
     const lastVol = c.at(-1)?.volume;
     setLastValues((prev) => ({
       ...prev,
@@ -1366,6 +1396,34 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       ema200: last200,
       volume: lastVol,
     }));
+  }
+
+  function updateVwapLabels() {
+    const series = vwapLabelRefs.current;
+    if (series.length === 0) return;
+    const { on, timeframe: tf } = vwapStateRef.current;
+    const settings = vwapSettingsOf(useChartStore.getState().vwapSettings);
+    const c = candlesRef.current;
+    const shown = on && c.length > 0 && !(settings.hideOnDwm && isDailyOrHigher(tf));
+    const last = shown ? computeVwap(c, settings).at(-1) : undefined;
+    const time = last?.time as UTCTimestamp | undefined;
+
+    // Same order as `vwapLabelRefs`
+    const plots: { value: number | null; color: string }[] = [
+      { value: settings.lineVisible && last ? last.vwap : null, color: settings.color },
+    ];
+    settings.bands.forEach((b, i) => {
+      const active = last && b.enabled;
+      plots.push({ value: active ? last.vwap + last.offsets[i] : null, color: b.upperColor });
+      plots.push({ value: active ? last.vwap - last.offsets[i] : null, color: b.lowerColor });
+    });
+    plots.forEach((p, i) => {
+      const s = series[i];
+      if (!s) return;
+      const visible = time !== undefined && p.value !== null && settings.labelsOnScale;
+      s.setData(visible ? [{ time, value: p.value as number }] : []);
+      s.applyOptions({ lastValueVisible: visible, color: p.color });
+    });
   }
 
   function updateRSI() {
@@ -2041,6 +2099,53 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
       }
     }
   }
+
+  // VWAP and its bands, drawn as an overlay so they break at every anchor period and can be filled
+  let vwapRender: React.ReactNode = null;
+  let vwapLast: number | undefined;
+  if (indicators.vwap && !hidden.vwap && chartRef.current && candleSeriesRef.current && paneOffsets[0]) {
+    const chart = chartRef.current;
+    const settings = vwapSettingsOf(vwapSettingsRaw);
+    const candles = candlesRef.current;
+    if (candles.length > 0 && !(settings.hideOnDwm && isDailyOrHigher(timeframe))) {
+      const points = computeVwap(candles, settings);
+      vwapLast = points[points.length - 1]?.vwap;
+      const y = (price: number) => candleSeriesRef.current!.priceToCoordinate(price);
+      const shift = settings.offset * chart.timeScale().options().barSpacing;
+      const segments: VwapSegment[] = [];
+      let seg: VwapSegment | null = null;
+      for (const p of points) {
+        const x0 = timeToCoordinate(p.time);
+        const vy = y(p.vwap);
+        if (x0 === null || vy === null) continue;
+        const bandYs = settings.bands.map((b, i) =>
+          b.enabled ? { upper: y(p.vwap + p.offsets[i]), lower: y(p.vwap - p.offsets[i]) } : null,
+        );
+        if (bandYs.some((b) => b && (b.upper === null || b.lower === null))) continue;
+        if (p.start || !seg) {
+          seg = { x: [], vwap: [], bands: settings.bands.map((b) => (b.enabled ? { upper: [], lower: [] } : null)) };
+          segments.push(seg);
+        }
+        seg.x.push(x0 + shift);
+        seg.vwap.push(vy);
+        bandYs.forEach((b, i) => {
+          if (b) {
+            seg!.bands[i]!.upper.push(b.upper as number);
+            seg!.bands[i]!.lower.push(b.lower as number);
+          }
+        });
+      }
+      const geometry: VwapGeometry = { segments };
+      vwapRender = (
+        <VwapOverlay
+          geometry={geometry}
+          settings={settings}
+          width={chart.timeScale().width()}
+          height={paneOffsets[0].height}
+        />
+      );
+    }
+  }
   void renderTick;
 
   return (
@@ -2051,6 +2156,7 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
     >
       <div ref={containerRef} className="h-full w-full" />
       {vpvrRender}
+      {vwapRender}
       {measureRender}
       {fibRender}
       {positionRender}
@@ -2176,6 +2282,17 @@ export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, conf
               onToggleHide={() => toggleHidden("vpvr")}
               onSettings={() => setSettingsTarget("vpvr")}
               onRemove={() => removeIndicator("vpvr")}
+            />
+          )}
+          {indicators.vwap && (
+            <IndicatorPill
+              name={`VWAP ${VWAP_ANCHORS.find((a) => a.value === vwapSettingsRaw.anchor)?.label ?? ""} ${vwapSettingsRaw.source}`}
+              value={vwapSettingsRaw.valuesInLabel && vwapLast !== undefined ? formatPrice(vwapLast) : undefined}
+              color={INDICATOR_COLORS.vwap}
+              hidden={hidden.vwap}
+              onToggleHide={() => toggleHidden("vwap")}
+              onSettings={() => setSettingsTarget("vwap")}
+              onRemove={() => removeIndicator("vwap")}
             />
           )}
         </div>
