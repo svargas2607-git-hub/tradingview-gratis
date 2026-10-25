@@ -1,6 +1,7 @@
 "use client";
 
 import { Code2, Zap } from "lucide-react";
+import { LayoutSelector } from "@/components/chart/LayoutSelector";
 import { SymbolSelector } from "@/components/chart/SymbolSelector";
 import { TimeframeSelector } from "@/components/chart/TimeframeSelector";
 import { IndicatorMenu } from "@/components/chart/IndicatorMenu";
@@ -24,6 +25,8 @@ export function Header() {
         <TimeframeSelector />
         <Separator orientation="vertical" className="mx-1 h-6 bg-tv-border" />
         <IndicatorMenu />
+        <Separator orientation="vertical" className="mx-1 h-6 bg-tv-border" />
+        <LayoutSelector />
       </div>
 
       <div className="flex items-center gap-2">

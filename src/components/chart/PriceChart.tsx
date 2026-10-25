@@ -15,6 +15,7 @@ import {
 } from "lightweight-charts";
 import { fetchKlines } from "@/lib/binance/rest";
 import { getBinanceWS } from "@/lib/binance/ws";
+import { chartSync } from "@/lib/chart-sync";
 import { ema, rsi, macd } from "@/lib/indicators";
 import type { Candle, Timeframe } from "@/lib/binance/types";
 import {
@@ -24,6 +25,7 @@ import {
   type FibKind,
   type FibPoint,
   type IndicatorKey,
+  type IndicatorConfig,
 } from "@/lib/store/chart-store";
 import { formatPrice, formatVolume } from "@/lib/format";
 import {
@@ -141,8 +143,13 @@ function durationLabel(aTime: number, bTime: number): string {
 }
 
 interface Props {
+  /** Identifies this chart in a multi-chart layout (crosshair / range sync) */
+  paneId: string;
   symbol: string;
   timeframe: Timeframe;
+  indicators: Record<IndicatorKey, boolean>;
+  hidden: Record<IndicatorKey, boolean>;
+  config: IndicatorConfig;
 }
 
 const TV_COLORS = {
@@ -185,8 +192,10 @@ interface PaneOffset {
   height: number;
 }
 
-export function PriceChart({ symbol, timeframe }: Props) {
+export function PriceChart({ paneId, symbol, timeframe, indicators, hidden, config }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
+  /** Only a chart under the mouse broadcasts its crosshair / range to the others */
+  const hoveredRef = useRef(false);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
@@ -202,9 +211,6 @@ export function PriceChart({ symbol, timeframe }: Props) {
   const candlesRef = useRef<Candle[]>([]);
   const priceLinesMapRef = useRef<Map<string, IPriceLine>>(new Map());
 
-  const indicators = useChartStore((s) => s.indicators);
-  const hidden = useChartStore((s) => s.hidden);
-  const config = useChartStore((s) => s.config);
   const tool = useChartStore((s) => s.tool);
   const priceLines = useChartStore((s) => s.priceLines);
   const fibs = useChartStore((s) => s.fibs);
@@ -559,6 +565,9 @@ export function PriceChart({ symbol, timeframe }: Props) {
 
     // Crosshair handler
     chart.subscribeCrosshairMove((param) => {
+      if (hoveredRef.current && useChartStore.getState().syncCrosshair) {
+        chartSync.crosshair(paneId, param.time ? Number(param.time) : null);
+      }
       if (
         toolRef.current === "measure" &&
         measureRef.current.phase === "placing" &&
@@ -599,8 +608,48 @@ export function PriceChart({ symbol, timeframe }: Props) {
     });
 
     // Re-render measure overlay on pan / zoom so pixel coords stay in sync
-    const tsRangeHandler = () => setRenderTick((t) => t + 1);
+    const tsRangeHandler = (range: { from: unknown; to: unknown } | null) => {
+      setRenderTick((t) => t + 1);
+      if (range && hoveredRef.current && useChartStore.getState().syncRange) {
+        chartSync.range(paneId, { from: Number(range.from), to: Number(range.to) });
+      }
+    };
     chart.timeScale().subscribeVisibleTimeRangeChange(tsRangeHandler);
+
+    // Apply crosshair / range coming from the other charts
+    const unregisterSync = chartSync.register(paneId, {
+      onCrosshair: (time) => {
+        const series = candleSeriesRef.current;
+        if (!useChartStore.getState().syncCrosshair || !series || time === null) {
+          chart.clearCrosshairPosition();
+          return;
+        }
+        const candles = candlesRef.current;
+        let candle: Candle | undefined;
+        for (let i = candles.length - 1; i >= 0; i--) {
+          if (candles[i].time <= time) {
+            candle = candles[i];
+            break;
+          }
+        }
+        if (!candle) {
+          chart.clearCrosshairPosition();
+          return;
+        }
+        chart.setCrosshairPosition(candle.close, candle.time as UTCTimestamp, series);
+      },
+      onRange: (range) => {
+        if (!useChartStore.getState().syncRange) return;
+        try {
+          chart.timeScale().setVisibleRange({
+            from: range.from as UTCTimestamp,
+            to: range.to as UTCTimestamp,
+          });
+        } catch {
+          // no data loaded yet
+        }
+      },
+    });
     const logicalRangeHandler = () => setRenderTick((t) => t + 1);
     chart.timeScale().subscribeVisibleLogicalRangeChange(logicalRangeHandler);
 
@@ -612,6 +661,7 @@ export function PriceChart({ symbol, timeframe }: Props) {
     recomputePaneOffsets();
 
     return () => {
+      unregisterSync();
       chart.timeScale().unsubscribeVisibleTimeRangeChange(tsRangeHandler);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(logicalRangeHandler);
       ro.disconnect();
@@ -1923,7 +1973,11 @@ export function PriceChart({ symbol, timeframe }: Props) {
   void renderTick;
 
   return (
-    <div className="relative h-full w-full">
+    <div
+      className="relative h-full w-full"
+      onPointerEnter={() => (hoveredRef.current = true)}
+      onPointerLeave={() => (hoveredRef.current = false)}
+    >
       <div ref={containerRef} className="h-full w-full" />
       {measureRender}
       {fibRender}

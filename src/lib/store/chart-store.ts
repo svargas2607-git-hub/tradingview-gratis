@@ -156,9 +156,30 @@ export const DEFAULT_WATCHLIST = [
   "MATICUSDT",
 ];
 
-interface ChartState {
+export type LayoutKind = "1" | "2h" | "2v" | "4";
+
+export const LAYOUT_PANES: Record<LayoutKind, number> = { "1": 1, "2h": 2, "2v": 2, "4": 4 };
+
+export interface ChartPane {
+  id: string;
   symbol: string;
   timeframe: Timeframe;
+  /** Per-chart indicators; missing on panes saved before this existed → the global ones */
+  indicators?: Record<IndicatorKey, boolean>;
+  hidden?: Record<IndicatorKey, boolean>;
+  config?: IndicatorConfig;
+}
+
+type PanePatch = Pick<ChartPane, "indicators" | "hidden" | "config">;
+
+interface ChartState {
+  /** Symbol / timeframe / indicators / hidden / config of the active pane (mirror of panes[activePaneId]) */
+  symbol: string;
+  timeframe: Timeframe;
+  /** Multi-chart layout: how many charts and how they are arranged */
+  layout: LayoutKind;
+  panes: ChartPane[];
+  activePaneId: string;
   /** Indicator is added to the chart (appears in pill + renders unless hidden) */
   indicators: Record<IndicatorKey, boolean>;
   /** Indicator is hidden (eye icon off) — kept in pill list, just not rendered */
@@ -187,6 +208,9 @@ interface ChartState {
   /** Magnet: drawing points snap to the OHLC of the bar under the cursor */
   magnet: boolean;
   magnetMode: MagnetMode;
+  /** Multi-chart: crosshair and visible time range follow across charts */
+  syncCrosshair: boolean;
+  syncRange: boolean;
 
   // Ephemeral UI state (not persisted)
   tool: DrawingTool;
@@ -208,6 +232,8 @@ interface ChartState {
   // Actions
   setSymbol: (s: string) => void;
   setTimeframe: (t: Timeframe) => void;
+  setLayout: (l: LayoutKind) => void;
+  setActivePane: (id: string) => void;
   toggleIndicator: (key: IndicatorKey) => void;
   removeIndicator: (key: IndicatorKey) => void;
   toggleHidden: (key: IndicatorKey) => void;
@@ -256,8 +282,18 @@ interface ChartState {
   setMagnet: (on: boolean) => void;
   /** Picking a mode also turns the magnet on, like TradingView */
   setMagnetMode: (mode: MagnetMode) => void;
+  setSyncCrosshair: (on: boolean) => void;
+  setSyncRange: (on: boolean) => void;
   setSymbolDialogOpen: (v: boolean) => void;
   setSettingsTarget: (k: IndicatorKey | null) => void;
+}
+
+/** Apply an indicator change to the global mirror and to the active pane's copy */
+function withActivePane(s: ChartState, patch: PanePatch): PanePatch & { panes: ChartPane[] } {
+  return {
+    ...patch,
+    panes: s.panes.map((p) => (p.id === s.activePaneId ? { ...p, ...patch } : p)),
+  };
 }
 
 export const useChartStore = create<ChartState>()(
@@ -265,6 +301,9 @@ export const useChartStore = create<ChartState>()(
     (set) => ({
       symbol: "BTCUSDT",
       timeframe: "15m" as Timeframe,
+      layout: "1" as LayoutKind,
+      panes: [{ id: "p1", symbol: "BTCUSDT", timeframe: "15m" as Timeframe }],
+      activePaneId: "p1",
       indicators: {
         ema20: true,
         ema50: true,
@@ -294,6 +333,8 @@ export const useChartStore = create<ChartState>()(
       rectangleDefaults: null,
       magnet: false,
       magnetMode: "weak",
+      syncCrosshair: true,
+      syncRange: true,
       tool: "cursor",
       priceLines: [],
       symbolDialogOpen: false,
@@ -304,25 +345,93 @@ export const useChartStore = create<ChartState>()(
       rectangleSettingsTarget: null,
       positionSettingsTarget: null,
 
-      setSymbol: (symbol) => set({ symbol }),
-      setTimeframe: (timeframe) => set({ timeframe }),
+      setSymbol: (symbol) =>
+        set((s) => ({
+          symbol,
+          panes: s.panes.map((p) => (p.id === s.activePaneId ? { ...p, symbol } : p)),
+        })),
+      setTimeframe: (timeframe) =>
+        set((s) => ({
+          timeframe,
+          panes: s.panes.map((p) => (p.id === s.activePaneId ? { ...p, timeframe } : p)),
+        })),
+      setLayout: (layout) =>
+        set((s) => {
+          const count = LAYOUT_PANES[layout];
+          // Keep existing panes (the active one's values are the live global ones)
+          const current = s.panes.map((p) =>
+            p.id === s.activePaneId
+              ? {
+                  ...p,
+                  symbol: s.symbol,
+                  timeframe: s.timeframe,
+                  indicators: s.indicators,
+                  hidden: s.hidden,
+                  config: s.config,
+                }
+              : p,
+          );
+          const panes = current.slice(0, count);
+          let n = 1;
+          while (panes.length < count) {
+            while (panes.some((p) => p.id === `p${n}`)) n++;
+            panes.push({
+              id: `p${n}`,
+              symbol: s.symbol,
+              timeframe: s.timeframe,
+              indicators: { ...s.indicators },
+              hidden: { ...s.hidden },
+              config: { ...s.config },
+            });
+          }
+          const activePaneId = panes.some((p) => p.id === s.activePaneId)
+            ? s.activePaneId
+            : panes[0].id;
+          const active = panes.find((p) => p.id === activePaneId)!;
+          return {
+            layout,
+            panes,
+            activePaneId,
+            symbol: active.symbol,
+            timeframe: active.timeframe,
+            indicators: active.indicators ?? s.indicators,
+            hidden: active.hidden ?? s.hidden,
+            config: active.config ?? s.config,
+          };
+        }),
+      setActivePane: (id) =>
+        set((s) => {
+          if (id === s.activePaneId) return {};
+          const pane = s.panes.find((p) => p.id === id);
+          if (!pane) return {};
+          return {
+            activePaneId: id,
+            symbol: pane.symbol,
+            timeframe: pane.timeframe,
+            indicators: pane.indicators ?? s.indicators,
+            hidden: pane.hidden ?? s.hidden,
+            config: pane.config ?? s.config,
+          };
+        }),
       toggleIndicator: (key) =>
-        set((s) => ({
-          indicators: { ...s.indicators, [key]: !s.indicators[key] },
-          // When re-adding, ensure not hidden
-          hidden: !s.indicators[key]
-            ? { ...s.hidden, [key]: false }
-            : s.hidden,
-        })),
+        set((s) =>
+          withActivePane(s, {
+            indicators: { ...s.indicators, [key]: !s.indicators[key] },
+            // When re-adding, ensure not hidden
+            hidden: !s.indicators[key] ? { ...s.hidden, [key]: false } : s.hidden,
+          }),
+        ),
       removeIndicator: (key) =>
-        set((s) => ({
-          indicators: { ...s.indicators, [key]: false },
-          hidden: { ...s.hidden, [key]: false },
-        })),
+        set((s) =>
+          withActivePane(s, {
+            indicators: { ...s.indicators, [key]: false },
+            hidden: { ...s.hidden, [key]: false },
+          }),
+        ),
       toggleHidden: (key) =>
-        set((s) => ({ hidden: { ...s.hidden, [key]: !s.hidden[key] } })),
+        set((s) => withActivePane(s, { hidden: { ...s.hidden, [key]: !s.hidden[key] } })),
       setConfig: (patch) =>
-        set((s) => ({ config: { ...s.config, ...patch } })),
+        set((s) => withActivePane(s, { config: { ...s.config, ...patch } })),
       addToWatchlist: (s) =>
         set((state) => ({
           watchlist: state.watchlist.includes(s)
@@ -564,6 +673,8 @@ export const useChartStore = create<ChartState>()(
         set({ rectangleDefaults: settings && { ...settings } }),
       setMagnet: (magnet) => set({ magnet }),
       setMagnetMode: (magnetMode) => set({ magnetMode, magnet: true }),
+      setSyncCrosshair: (syncCrosshair) => set({ syncCrosshair }),
+      setSyncRange: (syncRange) => set({ syncRange }),
       setSymbolDialogOpen: (symbolDialogOpen) => set({ symbolDialogOpen }),
       setSettingsTarget: (settingsTarget) => set({ settingsTarget }),
     }),
@@ -619,6 +730,9 @@ export const useChartStore = create<ChartState>()(
       partialize: (s) => ({
         symbol: s.symbol,
         timeframe: s.timeframe,
+        layout: s.layout,
+        panes: s.panes,
+        activePaneId: s.activePaneId,
         indicators: s.indicators,
         hidden: s.hidden,
         config: s.config,
@@ -634,6 +748,8 @@ export const useChartStore = create<ChartState>()(
         rectangleDefaults: s.rectangleDefaults,
         magnet: s.magnet,
         magnetMode: s.magnetMode,
+        syncCrosshair: s.syncCrosshair,
+        syncRange: s.syncRange,
       }),
     },
   ),

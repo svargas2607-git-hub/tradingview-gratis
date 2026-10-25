@@ -60,7 +60,8 @@ export class BinanceWS {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private nextId = 1;
-  private klineSubs = new Map<string, KlineSubscription>();
+  // Several charts can watch the same stream: one WS subscription, many listeners
+  private klineSubs = new Map<string, Set<KlineSubscription>>();
   private tickerSubs = new Map<string, (m: MiniTickerMsg["data"]) => void>();
   private connected = false;
   private closing = false;
@@ -74,9 +75,7 @@ export class BinanceWS {
       this.reconnectAttempts = 0;
       // Re-subscribe everything
       const streams: string[] = [];
-      this.klineSubs.forEach((s) => {
-        streams.push(`${s.symbol.toLowerCase()}@kline_${s.interval}`);
-      });
+      this.klineSubs.forEach((_subs, stream) => streams.push(stream));
       this.tickerSubs.forEach((_v, k) => streams.push(k));
       if (streams.length > 0) this.send({ method: "SUBSCRIBE", params: streams, id: this.nextId++ });
     };
@@ -117,10 +116,10 @@ export class BinanceWS {
 
   private dispatch(msg: WSMsg) {
     if (msg.stream.includes("@kline_")) {
-      const sub = this.klineSubs.get(msg.stream);
-      if (!sub) return;
+      const subs = this.klineSubs.get(msg.stream);
+      if (!subs) return;
       const k = (msg as KlineMsg).data.k;
-      sub.onCandle({
+      const candle: Candle = {
         time: Math.floor(k.t / 1000),
         open: parseFloat(k.o),
         high: parseFloat(k.h),
@@ -128,7 +127,8 @@ export class BinanceWS {
         close: parseFloat(k.c),
         volume: parseFloat(k.v),
         isFinal: k.x,
-      });
+      };
+      subs.forEach((sub) => sub.onCandle(candle));
     } else if (msg.stream.includes("@miniTicker")) {
       const handler = this.tickerSubs.get(msg.stream);
       if (handler) handler((msg as MiniTickerMsg).data);
@@ -137,9 +137,18 @@ export class BinanceWS {
 
   subscribeKline(sub: KlineSubscription): () => void {
     const stream = `${sub.symbol.toLowerCase()}@kline_${sub.interval}`;
-    this.klineSubs.set(stream, sub);
-    if (this.connected) this.send({ method: "SUBSCRIBE", params: [stream], id: this.nextId++ });
+    let subs = this.klineSubs.get(stream);
+    if (!subs) {
+      subs = new Set();
+      this.klineSubs.set(stream, subs);
+      if (this.connected) this.send({ method: "SUBSCRIBE", params: [stream], id: this.nextId++ });
+    }
+    subs.add(sub);
     return () => {
+      const current = this.klineSubs.get(stream);
+      if (!current) return;
+      current.delete(sub);
+      if (current.size > 0) return;
       this.klineSubs.delete(stream);
       if (this.connected) this.send({ method: "UNSUBSCRIBE", params: [stream], id: this.nextId++ });
     };
